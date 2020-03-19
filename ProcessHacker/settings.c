@@ -35,7 +35,6 @@ VOID PhAddDefaultSettings(
 {
     PhpAddIntegerSetting(L"AllowOnlyOneInstance", L"1");
     PhpAddIntegerSetting(L"CloseOnEscape", L"0");
-    PhpAddIntegerSetting(L"CollapseServicesOnStart", L"0");
     PhpAddStringSetting(L"DbgHelpSearchPath", L"SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols");
     PhpAddIntegerSetting(L"DbgHelpUndecorate", L"1");
     PhpAddStringSetting(L"DisabledPlugins", L"");
@@ -46,26 +45,30 @@ VOID PhAddDefaultSettings(
     PhpAddIntegerSetting(L"EnableKphWarnings", L"1");
     PhpAddIntegerSetting(L"EnableHandleSnapshot", L"1");
     PhpAddIntegerSetting(L"EnableNetworkResolve", L"1");
+    PhpAddIntegerSetting(L"EnableNetworkResolveDoH", L"0");
     PhpAddIntegerSetting(L"EnablePlugins", L"1");
-    PhpAddIntegerSetting(L"EnableServiceNonPoll", L"1");
+    PhpAddIntegerSetting(L"EnableServiceNonPoll", L"0");
     PhpAddIntegerSetting(L"EnableStage2", L"1");
     PhpAddIntegerSetting(L"EnableServiceStage2", L"0");
+    PhpAddIntegerSetting(L"EnableStartAsAdmin", L"0");
     PhpAddIntegerSetting(L"EnableWarnings", L"1");
     PhpAddIntegerSetting(L"EnableWindowText", L"1");
     PhpAddIntegerSetting(L"EnableThemeSupport", L"0");
     PhpAddIntegerSetting(L"EnableTooltipSupport", L"1");
     PhpAddIntegerSetting(L"EnableSecurityAdvancedDialog", L"1");
+    PhpAddIntegerSetting(L"EnableLinuxSubsystemSupport", L"0");
     PhpAddStringSetting(L"EnvironmentTreeListColumns", L"");
     PhpAddStringSetting(L"EnvironmentTreeListSort", L"0,0"); // 0, NoSortOrder
     PhpAddIntegerSetting(L"EnvironmentTreeListFlags", L"0");
     PhpAddIntegerSetting(L"FindObjRegex", L"0");
     PhpAddStringSetting(L"FindObjTreeListColumns", L"");
-    PhpAddIntegerPairSetting(L"FindObjWindowPosition", L"350,350");
+    PhpAddIntegerPairSetting(L"FindObjWindowPosition", L"0,0");
     PhpAddScalableIntegerPairSetting(L"FindObjWindowSize", L"@96|550,420");
     PhpAddStringSetting(L"FileBrowseExecutable", L"%SystemRoot%\\explorer.exe /select,\"%s\"");
     PhpAddIntegerSetting(L"FirstRun", L"1");
     PhpAddStringSetting(L"Font", L""); // null
     PhpAddIntegerSetting(L"ForceNoParent", L"1");
+    PhpAddIntegerSetting(L"KphBuildNumber", L"0");
     PhpAddStringSetting(L"HandleTreeListColumns", L"");
     PhpAddStringSetting(L"HandleTreeListSort", L"0,1"); // 0, AscendingSortOrder
     PhpAddIntegerSetting(L"HandleTreeListFlags", L"3");
@@ -83,6 +86,7 @@ VOID PhAddDefaultSettings(
     PhpAddIntegerSetting(L"HideSignedProcesses", L"0");
     PhpAddIntegerSetting(L"HideWaitingConnections", L"0");
     PhpAddIntegerSetting(L"HighlightingDuration", L"3e8"); // 1000ms
+    PhpAddStringSetting(L"IconGuids", L"");
     PhpAddStringSetting(L"IconSettings", L"1|1");
     PhpAddIntegerSetting(L"IconNotifyMask", L"c"); // PH_NOTIFY_SERVICE_CREATE | PH_NOTIFY_SERVICE_DELETE
     PhpAddIntegerSetting(L"IconProcesses", L"f"); // 15
@@ -92,7 +96,7 @@ VOID PhAddDefaultSettings(
     //PhpAddIntegerSetting(L"KphUnloadOnShutdown", L"0");
     PhpAddIntegerSetting(L"LogEntries", L"200"); // 512
     PhpAddStringSetting(L"LogListViewColumns", L"");
-    PhpAddIntegerPairSetting(L"LogWindowPosition", L"300,300");
+    PhpAddIntegerPairSetting(L"LogWindowPosition", L"0,0");
     PhpAddScalableIntegerPairSetting(L"LogWindowSize", L"@96|450,500");
     PhpAddIntegerSetting(L"MainWindowAlwaysOnTop", L"0");
     PhpAddStringSetting(L"MainWindowClassName", L"MainWindowClassName");
@@ -129,8 +133,11 @@ VOID PhAddDefaultSettings(
     PhpAddStringSetting(L"NetworkTreeListColumns", L"");
     PhpAddStringSetting(L"NetworkTreeListSort", L"0,1"); // 0, AscendingSortOrder
     PhpAddIntegerSetting(L"NoPurgeProcessRecords", L"0");
-    PhpAddIntegerPairSetting(L"OptionsWindowPosition", L"200,200");
+    PhpAddIntegerPairSetting(L"OptionsWindowPosition", L"0,0");
     PhpAddScalableIntegerPairSetting(L"OptionsWindowSize", L"@96|900,590");
+    PhpAddIntegerPairSetting(L"PageFileWindowPosition", L"0,0");
+    PhpAddScalableIntegerPairSetting(L"PageFileWindowSize", L"@96|500,300");
+    PhpAddStringSetting(L"PageFileListViewColumns", L"");
     PhpAddIntegerPairSetting(L"PluginManagerWindowPosition", L"0,0");
     PhpAddScalableIntegerPairSetting(L"PluginManagerWindowSize", L"@96|900,590");
     PhpAddStringSetting(L"PluginManagerTreeListColumns", L"");
@@ -147,6 +154,7 @@ VOID PhAddDefaultSettings(
     PhpAddIntegerSetting(L"PropagateCpuUsage", L"0");
     PhpAddStringSetting(L"RunAsProgram", L"");
     PhpAddStringSetting(L"RunAsUserName", L"");
+    PhpAddIntegerSetting(L"RunFileDlgState", L"0");
     PhpAddIntegerSetting(L"SampleCount", L"200"); // 512
     PhpAddIntegerSetting(L"SampleCountAutomatic", L"1");
     PhpAddIntegerSetting(L"ScrollToNewProcesses", L"0");
@@ -170,10 +178,12 @@ VOID PhAddDefaultSettings(
     PhpAddIntegerSetting(L"ThinRows", L"0");
     PhpAddStringSetting(L"ThreadTreeListColumns", L"");
     PhpAddStringSetting(L"ThreadTreeListSort", L"1,2"); // 1, DescendingSortOrder
+    PhpAddIntegerSetting(L"ThreadTreeListFlags", L"0");
     PhpAddStringSetting(L"ThreadStackTreeListColumns", L"");
     PhpAddScalableIntegerPairSetting(L"ThreadStackWindowSize", L"@96|420,400");
     PhpAddStringSetting(L"TokenGroupsListViewColumns", L"");
-    PhpAddStringSetting(L"TokenGroupsListViewSort", L"");
+    PhpAddStringSetting(L"TokenGroupsListViewStates", L"");
+    PhpAddStringSetting(L"TokenGroupsListViewSort", L"1,2");
     PhpAddIntegerSetting(L"TokenSplitterEnable", L"0");
     PhpAddIntegerSetting(L"TokenSplitterPosition", L"150");
     PhpAddStringSetting(L"TokenPrivilegesListViewColumns", L"");
@@ -249,9 +259,9 @@ VOID PhUpdateCachedSettings(
     VOID
     )
 {
-    PH_UPDATE_SETTING(CollapseServicesOnStart);
     PH_UPDATE_SETTING(ForceNoParent);
     PH_UPDATE_SETTING(HighlightingDuration);
+    PH_UPDATE_SETTING(HideOtherUserProcesses);
     PH_UPDATE_SETTING(PropagateCpuUsage);
     PH_UPDATE_SETTING(ScrollToNewProcesses);
     PH_UPDATE_SETTING(ShowCpuBelow001);
@@ -313,4 +323,6 @@ VOID PhUpdateCachedSettings(
     PH_UPDATE_SETTING(ColorIoWrite);
     PH_UPDATE_SETTING(ColorPrivate);
     PH_UPDATE_SETTING(ColorPhysical);
+
+    PhEnableThemeSupport = !!PhGetIntegerSetting(L"EnableThemeSupport");
 }

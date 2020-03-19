@@ -54,7 +54,7 @@ PPH_LOG_ENTRY PhpCreateLogEntry(
 }
 
 VOID PhpFreeLogEntry(
-    _Inout_ PPH_LOG_ENTRY Entry
+    _In_ _Post_invalid_ PPH_LOG_ENTRY Entry
     )
 {
     if (Entry->Type >= PH_LOG_ENTRY_PROCESS_FIRST && Entry->Type <= PH_LOG_ENTRY_PROCESS_LAST)
@@ -210,14 +210,14 @@ PPH_STRING PhFormatLogEntry(
     {
     case PH_LOG_ENTRY_PROCESS_CREATE:
         return PhFormatString(
-            L"Process created: %s (%u) started by %s (%u)",
+            L"Process created: %s (%lu) started by %s (%lu)",
             Entry->Process.Name->Buffer,
             HandleToUlong(Entry->Process.ProcessId),
             PhGetStringOrDefault(Entry->Process.ParentName, L"Unknown process"),
             HandleToUlong(Entry->Process.ParentProcessId)
             );
     case PH_LOG_ENTRY_PROCESS_DELETE:
-        return PhFormatString(L"Process terminated: %s (%u); exit status 0x%x", Entry->Process.Name->Buffer, HandleToUlong(Entry->Process.ProcessId), Entry->Process.ExitStatus);
+        return PhFormatString(L"Process terminated: %s (%lu); exit status 0x%x", Entry->Process.Name->Buffer, HandleToUlong(Entry->Process.ProcessId), Entry->Process.ExitStatus);
     case PH_LOG_ENTRY_SERVICE_CREATE:
         return PhFormatString(L"Service created: %s (%s)", Entry->Service.Name->Buffer, Entry->Service.DisplayName->Buffer);
     case PH_LOG_ENTRY_SERVICE_DELETE:

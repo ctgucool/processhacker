@@ -3,7 +3,7 @@
  *   handle properties
  *
  * Copyright (C) 2010-2013 wj32
- * Copyright (C) 2018 dmex
+ * Copyright (C) 2018-2020 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -22,14 +22,15 @@
  */
 
 #include <phapp.h>
+#include <hndlprv.h>
+#include <phplug.h>
+#include <phsettings.h>
+
+#include <emenu.h>
 #include <settings.h>
 #include <kphuser.h>
 #include <hndlinfo.h>
 #include <secedit.h>
-
-#include <hndlprv.h>
-#include <phplug.h>
-#include <phsettings.h>
 
 typedef enum _PHP_HANDLE_GENERAL_CATEGORY
 {
@@ -42,7 +43,8 @@ typedef enum _PHP_HANDLE_GENERAL_CATEGORY
     PH_HANDLE_GENERAL_CATEGORY_FILE,
     PH_HANDLE_GENERAL_CATEGORY_SECTION,
     PH_HANDLE_GENERAL_CATEGORY_MUTANT,
-    PH_HANDLE_GENERAL_CATEGORY_PROCESS,
+    PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD,
+    PH_HANDLE_GENERAL_CATEGORY_ETW,
 
     PH_HANDLE_GENERAL_CATEGORY_MAXIMUM
 } PHP_HANDLE_GENERAL_CATEGORY;
@@ -76,10 +78,13 @@ typedef enum _PHP_HANDLE_GENERAL_INDEX
     PH_HANDLE_GENERAL_INDEX_MUTANTABANDONED,
     PH_HANDLE_GENERAL_INDEX_MUTANTOWNER,
 
-    PH_HANDLE_GENERAL_INDEX_PROCESSNAME,
-    PH_HANDLE_GENERAL_INDEX_PROCESSCREATETIME,
-    PH_HANDLE_GENERAL_INDEX_PROCESSEXITTIME,
-    PH_HANDLE_GENERAL_INDEX_PROCESSEXITCODE,
+    PH_HANDLE_GENERAL_INDEX_PROCESSTHREADNAME,
+    PH_HANDLE_GENERAL_INDEX_PROCESSTHREADCREATETIME,
+    PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITTIME,
+    PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITCODE,
+
+    PH_HANDLE_GENERAL_INDEX_ETWORIGINALNAME,
+    PH_HANDLE_GENERAL_INDEX_ETWGROUPNAME,
 
     PH_HANDLE_GENERAL_INDEX_MAXIMUM
 } PHP_PROCESS_STATISTICS_INDEX;
@@ -120,9 +125,12 @@ static NTSTATUS PhpDuplicateHandleFromProcess(
     _In_opt_ PVOID Context
     )
 {
-    NTSTATUS status;
     PHANDLE_PROPERTIES_CONTEXT context = Context;
+    NTSTATUS status;
     HANDLE processHandle;
+
+    if (!context)
+        return STATUS_UNSUCCESSFUL;
 
     if (!NT_SUCCESS(status = PhOpenProcess(
         &processHandle,
@@ -234,6 +242,7 @@ NTSTATUS PhpShowHandlePropertiesThread(
     {
         pages[propSheetHeader.nPages++] = PhCreateTokenPage(
             PhpDuplicateHandleFromProcess,
+            context.ProcessId,
             &context,
             NULL
             );
@@ -381,6 +390,24 @@ VOID PhpUpdateHandleGeneralListViewGroups(
             NULL
             );
     }
+    else if (PhEqualString2(Context->HandleItem->TypeName, L"EtwRegistration", TRUE))
+    {
+        PhAddListViewGroup(Context->ListViewHandle, PH_HANDLE_GENERAL_CATEGORY_ETW, L"Event trace information");
+        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_ETWORIGINALNAME] = PhAddListViewGroupItem(
+            Context->ListViewHandle,
+            PH_HANDLE_GENERAL_CATEGORY_ETW,
+            PH_HANDLE_GENERAL_INDEX_ETWORIGINALNAME,
+            L"GUID",
+            NULL
+            );
+        //Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_ETWGROUPNAME] = PhAddListViewGroupItem(
+        //    Context->ListViewHandle,
+        //    PH_HANDLE_GENERAL_CATEGORY_ETW,
+        //    PH_HANDLE_GENERAL_INDEX_ETWGROUPNAME,
+        //    L"Group GUID",
+        //    NULL
+        //    );
+    }
     else if (PhEqualStringRef2(&Context->HandleItem->TypeName->sr, L"File", TRUE))
     {
         PhAddListViewGroup(Context->ListViewHandle, PH_HANDLE_GENERAL_CATEGORY_FILE, L"File information");
@@ -468,33 +495,66 @@ VOID PhpUpdateHandleGeneralListViewGroups(
     }
     else if (PhEqualStringRef2(&Context->HandleItem->TypeName->sr, L"Process", TRUE))
     {
-        PhAddListViewGroup(Context->ListViewHandle, PH_HANDLE_GENERAL_CATEGORY_PROCESS, L"Process information");
+        PhAddListViewGroup(Context->ListViewHandle, PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD, L"Process information");
 
-        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSNAME] = PhAddListViewGroupItem(
+        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADNAME] = PhAddListViewGroupItem(
             Context->ListViewHandle,
-            PH_HANDLE_GENERAL_CATEGORY_PROCESS,
-            PH_HANDLE_GENERAL_INDEX_PROCESSNAME,
+            PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD,
+            PH_HANDLE_GENERAL_INDEX_PROCESSTHREADNAME,
             L"Name",
             NULL
             );
-        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSCREATETIME] = PhAddListViewGroupItem(
+        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADCREATETIME] = PhAddListViewGroupItem(
             Context->ListViewHandle,
-            PH_HANDLE_GENERAL_CATEGORY_PROCESS,
-            PH_HANDLE_GENERAL_INDEX_PROCESSCREATETIME,
+            PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD,
+            PH_HANDLE_GENERAL_INDEX_PROCESSTHREADCREATETIME,
             L"Created",
             NULL
             );
-        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSEXITTIME] = PhAddListViewGroupItem(
+        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITTIME] = PhAddListViewGroupItem(
             Context->ListViewHandle,
-            PH_HANDLE_GENERAL_CATEGORY_PROCESS,
-            PH_HANDLE_GENERAL_INDEX_PROCESSEXITTIME,
+            PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD,
+            PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITTIME,
             L"Exited",
             NULL
             );
-        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSEXITCODE] = PhAddListViewGroupItem(
+        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITCODE] = PhAddListViewGroupItem(
             Context->ListViewHandle,
-            PH_HANDLE_GENERAL_CATEGORY_PROCESS,
-            PH_HANDLE_GENERAL_INDEX_PROCESSEXITCODE,
+            PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD,
+            PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITCODE,
+            L"Exit status",
+            NULL
+            );
+    }
+    else if (PhEqualStringRef2(&Context->HandleItem->TypeName->sr, L"Thread", TRUE))
+    {
+        PhAddListViewGroup(Context->ListViewHandle, PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD, L"Thread information");
+
+        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADNAME] = PhAddListViewGroupItem(
+            Context->ListViewHandle,
+            PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD,
+            PH_HANDLE_GENERAL_INDEX_PROCESSTHREADNAME,
+            L"Name",
+            NULL
+            );
+        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADCREATETIME] = PhAddListViewGroupItem(
+            Context->ListViewHandle,
+            PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD,
+            PH_HANDLE_GENERAL_INDEX_PROCESSTHREADCREATETIME,
+            L"Created",
+            NULL
+            );
+        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITTIME] = PhAddListViewGroupItem(
+            Context->ListViewHandle,
+            PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD,
+            PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITTIME,
+            L"Exited",
+            NULL
+            );
+        Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITCODE] = PhAddListViewGroupItem(
+            Context->ListViewHandle,
+            PH_HANDLE_GENERAL_CATEGORY_PROCESSTHREAD,
+            PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITCODE,
             L"Exit status",
             NULL
             );
@@ -509,11 +569,16 @@ VOID PhpUpdateHandleGeneral(
     PPH_ACCESS_ENTRY accessEntries;
     ULONG numberOfAccessEntries;
     OBJECT_BASIC_INFORMATION basicInfo;
-    WCHAR string[PH_PTR_STR_LEN];
+    WCHAR string[PH_INT64_STR_LEN_1];
 
     PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_NAME], 1, PhGetStringOrEmpty(Context->HandleItem->BestObjectName));
     PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_TYPE], 1, PhGetStringOrEmpty(Context->HandleItem->TypeName));
-    PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_OBJECT], 1, Context->HandleItem->ObjectString);
+
+    if (Context->HandleItem->Object)
+    {
+        PhPrintPointer(string, Context->HandleItem->Object);
+        PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_OBJECT], 1, string);
+    }
 
     if (PhGetAccessEntries(
         PhGetStringOrEmpty(Context->HandleItem->TypeName),
@@ -626,23 +691,21 @@ VOID PhpUpdateHandleGeneral(
                 NULL
                 )))
             {
-                PH_FORMAT format[1];
-                PPH_STRING string;
+                PhPrintUInt32(string, basicInfo.SequenceNo);
+                PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_SEQUENCENUMBER], 1, string);
 
-                PhInitFormatI64UGroupDigits(&format[0], basicInfo.SequenceNo);
-
-                string = PhFormat(format, 1, 128);
-                PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_SEQUENCENUMBER], 1, string->Buffer);
-                PhDereferenceObject(string);
-
-                PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PORTCONTEXT], 1, 
-                    PhaFormatString(L"0x%Ix", basicInfo.PortContext)->Buffer);
+                PhPrintPointer(string, basicInfo.PortContext);
+                PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PORTCONTEXT], 1, string);
             }
 
             NtClose(alpcPortHandle);
         }
     }
-    else if (PhEqualStringRef2(&Context->HandleItem->TypeName->sr, L"File", TRUE))
+    else if (PhEqualString2(Context->HandleItem->TypeName, L"EtwRegistration", TRUE))
+    {
+        PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_ETWORIGINALNAME], 1, PhGetString(Context->HandleItem->ObjectName));
+    }
+    else if (PhEqualString2(Context->HandleItem->TypeName, L"File", TRUE))
     {
         NTSTATUS status;
         HANDLE processHandle;
@@ -671,6 +734,8 @@ VOID PhpUpdateHandleGeneral(
             BOOLEAN disableFlushButton = FALSE;
             BOOLEAN isFileOrDirectory = FALSE;
             BOOLEAN isConsoleHandle = FALSE;
+            BOOLEAN isPipeHandle = FALSE;
+            BOOLEAN isNetworkHandle = FALSE;
             FILE_FS_DEVICE_INFORMATION fileDeviceInfo;
             FILE_MODE_INFORMATION fileModeInfo;
             FILE_STANDARD_INFORMATION fileStandardInfo;
@@ -688,7 +753,12 @@ VOID PhpUpdateHandleGeneral(
                 switch (fileDeviceInfo.DeviceType)
                 {
                 case FILE_DEVICE_NAMED_PIPE:
+                    isPipeHandle = TRUE;
                     PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_FILETYPE], 1, L"Pipe");
+                    break;
+                case FILE_DEVICE_NETWORK:
+                    isNetworkHandle = TRUE;
+                    PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_FILETYPE], 1, L"Network");
                     break;
                 case FILE_DEVICE_CD_ROM:
                 case FILE_DEVICE_CD_ROM_FILE_SYSTEM:
@@ -711,29 +781,17 @@ VOID PhpUpdateHandleGeneral(
                 }
             }
 
-            if (isConsoleHandle)
-            {
-                // TODO: We block indefinitely when calling NtQueryInformationFile for '\Device\ConDrv\CurrentIn'
-                // but we can query other '\Device\ConDrv' console handles (dmex)
-                status = PhCallNtQueryFileInformationWithTimeout(
-                    fileHandle,
-                    FileModeInformation,
-                    &fileModeInfo,
-                    sizeof(FILE_MODE_INFORMATION)
-                    );
-            }
-            else
-            {
-                status = NtQueryInformationFile(
-                    fileHandle,
-                    &isb,
-                    &fileModeInfo,
-                    sizeof(FILE_MODE_INFORMATION),
-                    FileModeInformation
-                    );
-            }
+            // Note: These devices deadlock without a timeout (dmex)
+            // 1) Named pipes
+            // 2) \Device\ConDrv\CurrentIn
+            // 3) \Device\VolMgrControl
 
-            if (NT_SUCCESS(status))
+            if (NT_SUCCESS(status = PhCallNtQueryFileInformationWithTimeout(
+                fileHandle,
+                FileModeInformation,
+                &fileModeInfo,
+                sizeof(FILE_MODE_INFORMATION)
+                )))
             {
                 PH_FORMAT format[5];
                 PPH_STRING fileModeAccessStr;
@@ -746,6 +804,7 @@ VOID PhpUpdateHandleGeneral(
                     FileModeAccessEntries,
                     RTL_NUMBER_OF(FileModeAccessEntries)
                     );
+
                 PhInitFormatS(&format[0], L"0x");
                 PhInitFormatX(&format[1], fileModeInfo.Mode);
                 PhInitFormatS(&format[2], L" (");
@@ -762,12 +821,11 @@ VOID PhpUpdateHandleGeneral(
 
             if (!isConsoleHandle)
             {
-                if (NT_SUCCESS(NtQueryInformationFile(
+                if (NT_SUCCESS(status = PhCallNtQueryFileInformationWithTimeout(
                     fileHandle,
-                    &isb,
+                    FileStandardInformation,
                     &fileStandardInfo,
-                    sizeof(FILE_STANDARD_INFORMATION),
-                    FileStandardInformation
+                    sizeof(FILE_STANDARD_INFORMATION)
                     )))
                 {
                     PH_FORMAT format[1];
@@ -788,12 +846,11 @@ VOID PhpUpdateHandleGeneral(
                     disableFlushButton |= fileStandardInfo.Directory;
                 }
 
-                if (NT_SUCCESS(NtQueryInformationFile(
+                if (NT_SUCCESS(status = PhCallNtQueryFileInformationWithTimeout(
                     fileHandle,
-                    &isb,
+                    FilePositionInformation,
                     &filePositionInfo,
-                    sizeof(FILE_POSITION_INFORMATION),
-                    FilePositionInformation
+                    sizeof(FILE_POSITION_INFORMATION)
                     )))
                 {
                     if (filePositionInfo.CurrentByteOffset.QuadPart != 0 && fileStandardInfo.EndOfFile.QuadPart != 0)
@@ -829,7 +886,7 @@ VOID PhpUpdateHandleGeneral(
             NtClose(fileHandle);
         }
     }
-    else if (PhEqualStringRef2(&Context->HandleItem->TypeName->sr, L"Section", TRUE))
+    else if (PhEqualString2(Context->HandleItem->TypeName, L"Section", TRUE))
     {
         NTSTATUS status;
         HANDLE processHandle;
@@ -990,7 +1047,7 @@ VOID PhpUpdateHandleGeneral(
             if (NT_SUCCESS(PhGetProcessImageFileName(dupHandle, &fileName)))
             {
                 PhMoveReference(&fileName, PhGetFileName(fileName));
-                PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSNAME], 1, PhGetStringOrEmpty(fileName));
+                PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADNAME], 1, PhGetStringOrEmpty(fileName));
                 PhDereferenceObject(fileName);
             }
 
@@ -1004,12 +1061,12 @@ VOID PhpUpdateHandleGeneral(
                 SYSTEMTIME time;
 
                 PhLargeIntegerToLocalSystemTime(&time, &times.CreateTime);
-                PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSCREATETIME], 1, PhaFormatDateTime(&time)->Buffer);
+                PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADCREATETIME], 1, PhaFormatDateTime(&time)->Buffer);
 
                 if (exitStatus != STATUS_PENDING)
                 {
                     PhLargeIntegerToLocalSystemTime(&time, &times.ExitTime);
-                    PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSEXITTIME], 1, PhaFormatDateTime(&time)->Buffer);
+                    PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITTIME], 1, PhaFormatDateTime(&time)->Buffer);
                 }
             }
 
@@ -1022,18 +1079,114 @@ VOID PhpUpdateHandleGeneral(
                 exitcode = PhFormatString(
                     L"0x%x (%s)",
                     exitStatus,
-                    status->Buffer
+                    PhGetStringOrDefault(status, L"Unknown")
                     );
 
                 PhSetListViewSubItem(
                     Context->ListViewHandle,
-                    Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSEXITCODE],
+                    Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITCODE],
                     1,
                     PhGetStringOrEmpty(exitcode)
                     );
 
                 PhDereferenceObject(exitcode);
-                PhDereferenceObject(status);
+                PhClearReference(&status);
+            }
+
+            NtClose(dupHandle);
+        }
+    }
+    else if (PhEqualString2(Context->HandleItem->TypeName, L"Thread", TRUE))
+    {
+        NTSTATUS status;
+        HANDLE processHandle;
+        HANDLE dupHandle;
+
+        if (NT_SUCCESS(status = PhOpenProcess(
+            &processHandle,
+            PROCESS_DUP_HANDLE,
+            Context->ProcessId
+            )))
+        {
+            status = NtDuplicateObject(
+                processHandle,
+                Context->HandleItem->Handle,
+                NtCurrentProcess(),
+                &dupHandle,
+                THREAD_QUERY_LIMITED_INFORMATION,
+                0,
+                0
+                );
+
+            NtClose(processHandle);
+        }
+
+        if (NT_SUCCESS(status))
+        {
+            BOOLEAN isTerminated = FALSE;
+            THREAD_BASIC_INFORMATION basicInfo;
+            KERNEL_USER_TIMES times;
+            PPH_STRING name;
+
+            if (NT_SUCCESS(PhGetThreadName(dupHandle, &name)))
+            {
+                PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADNAME], 1, PhGetStringOrEmpty(name));
+                PhDereferenceObject(name);
+            }
+
+            PhGetThreadIsTerminated(dupHandle, &isTerminated);
+
+            if (isTerminated && NT_SUCCESS(PhGetThreadBasicInformation(dupHandle, &basicInfo)))
+            {
+                PPH_STRING status;
+                PPH_STRING exitcode;
+
+                status = PhGetStatusMessage(basicInfo.ExitStatus, 0);
+                exitcode = PhFormatString(
+                    L"0x%x (%s)",
+                    basicInfo.ExitStatus,
+                    PhGetStringOrDefault(status, L"Unknown")
+                    );
+
+                PhSetListViewSubItem(
+                    Context->ListViewHandle,
+                    Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITCODE],
+                    1,
+                    PhGetStringOrEmpty(exitcode)
+                    );
+
+                PhDereferenceObject(exitcode);
+                PhClearReference(&status);
+
+                //if (NT_SUCCESS(PhOpenProcess(
+                //    &processHandle,
+                //    PROCESS_QUERY_LIMITED_INFORMATION,
+                //    basicInfo.ClientId.UniqueProcess
+                //    )))
+                //{
+                //    if (NT_SUCCESS(PhGetProcessImageFileName(processHandle, &fileName)))
+                //    {
+                //        PhMoveReference(&fileName, PhGetFileName(fileName));
+                //        PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADNAME], 1, PhGetStringOrEmpty(fileName));
+                //        PhDereferenceObject(fileName);
+                //    }
+                //
+                //    NtClose(processHandle);
+                //}
+            }
+
+            if (NT_SUCCESS(PhGetThreadTimes(dupHandle, &times)))
+            {
+                SYSTEMTIME time;
+
+                PhLargeIntegerToLocalSystemTime(&time, &times.CreateTime);
+                PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADCREATETIME], 1, PhaFormatDateTime(&time)->Buffer);
+
+                if (isTerminated)
+                {
+                    PhLargeIntegerToLocalSystemTime(&time, &times.ExitTime);
+                    PhSetListViewSubItem(Context->ListViewHandle, Context->ListViewRowCache[PH_HANDLE_GENERAL_INDEX_PROCESSTHREADEXITTIME], 1, PhaFormatDateTime(&time)->Buffer);
+                }
             }
 
             NtClose(dupHandle);
@@ -1092,6 +1245,8 @@ INT_PTR CALLBACK PhpHandleGeneralDlgProc(
             PhpUpdateHandleGeneralListViewGroups(context);
             PhpUpdateHandleGeneral(context);
 
+            PhRegisterWindowCallback(GetParent(hwndDlg), PH_PLUGIN_WINDOW_EVENT_TYPE_TOPMOST, NULL);
+
             if (PhEnableThemeSupport) // TODO: Required for compat (dmex)
                 PhInitializeWindowTheme(GetParent(hwndDlg), PhEnableThemeSupport);
             else
@@ -1100,6 +1255,8 @@ INT_PTR CALLBACK PhpHandleGeneralDlgProc(
         break;
     case WM_DESTROY:
         {
+            PhUnregisterWindowCallback(GetParent(hwndDlg));
+
             PhSaveWindowPlacementToSetting(L"HandlePropertiesWindowPosition", NULL, GetParent(hwndDlg)); // HACK
 
             PhDeleteLayoutManager(&context->LayoutManager);
@@ -1117,6 +1274,8 @@ INT_PTR CALLBACK PhpHandleGeneralDlgProc(
         {
             LPNMHDR header = (LPNMHDR)lParam;
 
+            PhHandleListViewNotifyBehaviors(lParam, context->ListViewHandle, PH_LIST_VIEW_DEFAULT_1_BEHAVIORS);
+
             switch (header->code)
             {
             case PSN_QUERYINITIALFOCUS:
@@ -1124,6 +1283,69 @@ INT_PTR CALLBACK PhpHandleGeneralDlgProc(
                     SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, (LONG_PTR)GetDlgItem(hwndDlg, IDC_BASICINFORMATION));
                 }
                 return TRUE;
+            }
+        }
+        break;
+    case WM_CONTEXTMENU:
+        {
+            if ((HWND)wParam == context->ListViewHandle)
+            {
+                POINT point;
+                PPH_EMENU menu;
+                PPH_EMENU item;
+                PVOID *listviewItems;
+                ULONG numberOfItems;
+
+                point.x = GET_X_LPARAM(lParam);
+                point.y = GET_Y_LPARAM(lParam);
+
+                if (point.x == -1 && point.y == -1)
+                    PhGetListViewContextMenuPoint((HWND)wParam, &point);
+
+                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
+
+                if (numberOfItems != 0)
+                {
+                    menu = PhCreateEMenu();
+
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
+                    PhInsertCopyListViewEMenuItem(menu, IDC_COPY, context->ListViewHandle);
+
+                    item = PhShowEMenu(
+                        menu,
+                        hwndDlg,
+                        PH_EMENU_SHOW_SEND_COMMAND | PH_EMENU_SHOW_LEFTRIGHT,
+                        PH_ALIGN_LEFT | PH_ALIGN_TOP,
+                        point.x,
+                        point.y
+                        );
+
+                    if (item)
+                    {
+                        BOOLEAN handled = FALSE;
+
+                        handled = PhHandleCopyListViewEMenuItem(item);
+
+                        //if (!handled && PhPluginsEnabled)
+                        //    handled = PhPluginTriggerEMenuItem(&menuInfo, item);
+
+                        if (!handled)
+                        {
+                            switch (item->Id)
+                            {
+                            case IDC_COPY:
+                                {
+                                    PhCopyListView(context->ListViewHandle);
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    PhDestroyEMenu(menu);
+                }
+
+                PhFree(listviewItems);
             }
         }
         break;

@@ -79,6 +79,9 @@ BOOLEAN EtpGpuSysInfoSectionCallback(
         {
             PPH_SYSINFO_CREATE_DIALOG createDialog = Parameter1;
 
+            if (!createDialog)
+                break;
+
             createDialog->Instance = PluginInstance->DllBase;
             createDialog->Template = MAKEINTRESOURCE(IDD_SYSINFO_GPU);
             createDialog->DialogProc = EtpGpuDialogProc;
@@ -87,6 +90,9 @@ BOOLEAN EtpGpuSysInfoSectionCallback(
     case SysInfoGraphGetDrawInfo:
         {
             PPH_GRAPH_DRAW_INFO drawInfo = Parameter1;
+
+            if (!drawInfo)
+                break;
 
             drawInfo->Flags = PH_GRAPH_USE_GRID_X | PH_GRAPH_USE_GRID_Y;
             Section->Parameters->ColorSetupFunction(drawInfo, PhGetIntegerSetting(L"ColorCpuKernel"), 0);
@@ -104,6 +110,9 @@ BOOLEAN EtpGpuSysInfoSectionCallback(
             PPH_SYSINFO_GRAPH_GET_TOOLTIP_TEXT getTooltipText = Parameter1;
             FLOAT gpu;
 
+            if (!getTooltipText)
+                break;
+
             gpu = PhGetItemCircularBuffer_FLOAT(&EtGpuNodeHistory, getTooltipText->Index);
 
             PhMoveReference(&Section->GraphState.TooltipText, PhFormatString(
@@ -118,6 +127,9 @@ BOOLEAN EtpGpuSysInfoSectionCallback(
     case SysInfoGraphDrawPanel:
         {
             PPH_SYSINFO_DRAW_PANEL drawPanel = Parameter1;
+
+            if (!drawPanel)
+                break;
 
             drawPanel->Title = PhCreateString(L"GPU");
 
@@ -198,8 +210,8 @@ INT_PTR CALLBACK EtpGpuDialogProc(
             GpuGraphMargin = graphItem->Margin;
             panelItem = PhAddLayoutItem(&GpuLayoutManager, GetDlgItem(hwndDlg, IDC_PANEL_LAYOUT), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
 
-            SendMessage(GetDlgItem(hwndDlg, IDC_TITLE), WM_SETFONT, (WPARAM)GpuSection->Parameters->LargeFont, FALSE);
-            SendMessage(GetDlgItem(hwndDlg, IDC_GPUNAME), WM_SETFONT, (WPARAM)GpuSection->Parameters->MediumFont, FALSE);
+            SetWindowFont(GetDlgItem(hwndDlg, IDC_TITLE), GpuSection->Parameters->LargeFont, FALSE);
+            SetWindowFont(GetDlgItem(hwndDlg, IDC_GPUNAME), GpuSection->Parameters->MediumFont, FALSE);
 
             PhSetDialogItemText(hwndDlg, IDC_GPUNAME, ((PPH_STRING)PH_AUTO(EtpGetGpuNameString()))->Buffer);
 

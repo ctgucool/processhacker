@@ -172,6 +172,9 @@ BOOLEAN PhCmForwardMessage(
             PH_TREENEW_COLUMN tnColumn;
             PPH_CM_COLUMN column;
 
+            if (!getCellText)
+                return FALSE;
+
             if (getCellText->Id < Manager->MinId)
                 return FALSE;
 
@@ -595,7 +598,7 @@ PPH_STRING PhCmSaveSettingsEx(
 
     PhInitializeStringBuilder(&stringBuilder, 100);
 
-    PhAppendFormatStringBuilder(&stringBuilder, L"@%u|", PhGlobalDpi);
+    PhAppendFormatStringBuilder(&stringBuilder, L"@%lu|", PhGlobalDpi);
 
     while (count < total)
     {
@@ -609,7 +612,7 @@ PPH_STRING PhCmSaveSettingsEx(
                     {
                         PhAppendFormatStringBuilder(
                             &stringBuilder,
-                            L"%u,%u,%u|",
+                            L"%lu,%lu,%ld|",
                             i,
                             column.Fixed ? 0 : column.DisplayIndex + increment,
                             column.Width
@@ -622,7 +625,7 @@ PPH_STRING PhCmSaveSettingsEx(
                         cmColumn = column.Context;
                         PhAppendFormatStringBuilder(
                             &stringBuilder,
-                            L"+%s+%u,%u,%u|",
+                            L"+%s+%lu,%lu,%ld|",
                             cmColumn->Plugin->Name.Buffer,
                             cmColumn->SubId,
                             column.DisplayIndex + increment,
@@ -637,7 +640,7 @@ PPH_STRING PhCmSaveSettingsEx(
                 {
                     PhAppendFormatStringBuilder(
                         &stringBuilder,
-                        L"%u,,%u|",
+                        L"%lu,,%ld|",
                         i,
                         column.Width
                         );
@@ -649,7 +652,7 @@ PPH_STRING PhCmSaveSettingsEx(
                     cmColumn = column.Context;
                     PhAppendFormatStringBuilder(
                         &stringBuilder,
-                        L"+%s+%u,,%u|",
+                        L"+%s+%lu,,%ld|",
                         cmColumn->Plugin->Name.Buffer,
                         cmColumn->SubId,
                         column.Width
@@ -677,7 +680,7 @@ PPH_STRING PhCmSaveSettingsEx(
             {
                 if (!Manager || sortColumn < Manager->MinId)
                 {
-                    *SortSettings = PhFormatString(L"%u,%u", sortColumn, sortOrder);
+                    *SortSettings = PhFormatString(L"%lu,%lu", sortColumn, sortOrder);
                 }
                 else
                 {
@@ -687,7 +690,7 @@ PPH_STRING PhCmSaveSettingsEx(
                     if (TreeNew_GetColumn(TreeNewHandle, sortColumn, &column))
                     {
                         cmColumn = column.Context;
-                        *SortSettings = PhFormatString(L"+%s+%u,%u", cmColumn->Plugin->Name.Buffer, cmColumn->SubId, sortOrder);
+                        *SortSettings = PhFormatString(L"+%s+%lu,%lu", cmColumn->Plugin->Name.Buffer, cmColumn->SubId, sortOrder);
                     }
                     else
                     {

@@ -2,7 +2,7 @@
  * Process Hacker Plugins -
  *   Update Checker Plugin
  *
- * Copyright (C) 2011-2016 dmex
+ * Copyright (C) 2011-2019 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -49,7 +49,7 @@ VOID NTAPI MainMenuInitializingCallback(
     PPH_PLUGIN_MENU_INFORMATION menuInfo = Parameter;
 
     // Check this menu is the Help menu
-    if (menuInfo->u.MainMenu.SubMenuIndex != 4)
+    if (!menuInfo || menuInfo->u.MainMenu.SubMenuIndex != PH_MENU_ITEM_LOCATION_HELP)
         return;
 
     PhInsertEMenuItem(menuInfo->Menu, PhPluginCreateEMenuItem(PluginInstance, 0, UPDATE_MENUITEM, L"Check for &updates", NULL), 0);
@@ -74,6 +74,9 @@ VOID NTAPI ShowOptionsCallback(
     )
 {
     PPH_PLUGIN_OPTIONS_POINTERS optionsEntry = (PPH_PLUGIN_OPTIONS_POINTERS)Parameter;
+
+    if (!optionsEntry)
+        return;
 
     optionsEntry->CreateSection(
         L"Updater",
@@ -101,6 +104,8 @@ LOGICAL DllMain(
                 { StringSettingType, SETTING_NAME_LAST_CHECK, L"0" },
                 { IntegerPairSettingType, SETTING_NAME_CHANGELOG_WINDOW_POSITION, L"0,0" },
                 { ScalableIntegerPairSettingType, SETTING_NAME_CHANGELOG_WINDOW_SIZE, L"@96|420,250" },
+                { StringSettingType, SETTING_NAME_CHANGELOG_COLUMNS, L"" },
+                { StringSettingType, SETTING_NAME_CHANGELOG_SORTCOLUMN, L"" },
             };
 
             PluginInstance = PhRegisterPlugin(PLUGIN_NAME, Instance, &info);
@@ -138,7 +143,7 @@ LOGICAL DllMain(
                 &PluginShowOptionsCallbackRegistration
                 );
 
-            PhAddSettings(settings, ARRAYSIZE(settings));
+            PhAddSettings(settings, RTL_NUMBER_OF(settings));
         }
         break;
     }

@@ -2,8 +2,8 @@
  * Process Hacker Plugins -
  *   Hardware Devices Plugin
  *
- * Copyright (C) 2015-2016 dmex
  * Copyright (C) 2016 wj32
+ * Copyright (C) 2015-2019 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -27,6 +27,10 @@
 #define PLUGIN_NAME L"ProcessHacker.HardwareDevices"
 #define SETTING_NAME_ENABLE_NDIS (PLUGIN_NAME L".EnableNDIS")
 #define SETTING_NAME_INTERFACE_LIST (PLUGIN_NAME L".NetworkList")
+#define SETTING_NAME_NETWORK_POSITION (PLUGIN_NAME L".NetworkWindowPosition")
+#define SETTING_NAME_NETWORK_SIZE (PLUGIN_NAME L".NetworkWindowSize")
+#define SETTING_NAME_NETWORK_COLUMNS (PLUGIN_NAME L".NetworkListColumns")
+#define SETTING_NAME_NETWORK_SORTCOLUMN (PLUGIN_NAME L".NetworkListSort")
 #define SETTING_NAME_DISK_LIST (PLUGIN_NAME L".DiskList")
 #define SETTING_NAME_DISK_POSITION (PLUGIN_NAME L".DiskWindowPosition")
 #define SETTING_NAME_DISK_SIZE (PLUGIN_NAME L".DiskWindowSize")
@@ -97,11 +101,13 @@ typedef struct _DV_NETADAPTER_ENTRY
         };
     };
 
-    //ULONG64 LinkSpeed;
-    ULONG64 InboundValue;
-    ULONG64 OutboundValue;
-    ULONG64 LastInboundValue;
-    ULONG64 LastOutboundValue;
+    ULONG64 NetworkReceiveRaw;
+    ULONG64 NetworkSendRaw;
+    ULONG64 CurrentNetworkReceive;
+    ULONG64 CurrentNetworkSend;
+
+    PH_UINT64_DELTA NetworkReceiveDelta;
+    PH_UINT64_DELTA NetworkSendDelta;
 
     PH_CIRCULAR_BUFFER_ULONG64 InboundBuffer;
     PH_CIRCULAR_BUFFER_ULONG64 OutboundBuffer;
@@ -119,6 +125,24 @@ typedef struct _DV_NETADAPTER_SYSINFO_CONTEXT
     PPH_SYSINFO_SECTION SysinfoSection;
     PH_GRAPH_STATE GraphState;
     PH_LAYOUT_MANAGER LayoutManager;
+
+    union
+    {
+        BOOLEAN Flags;
+        struct
+        {
+            BOOLEAN HaveFirstSample : 1;
+            BOOLEAN Spare : 7;
+        };
+    };
+
+    ULONG64 NetworkReceiveRaw;
+    ULONG64 NetworkSendRaw;
+    ULONG64 CurrentNetworkReceive;
+    ULONG64 CurrentNetworkSend;
+
+    PH_UINT64_DELTA NetworkReceiveDelta;
+    PH_UINT64_DELTA NetworkSendDelta;
 } DV_NETADAPTER_SYSINFO_CONTEXT, *PDV_NETADAPTER_SYSINFO_CONTEXT;
 
 typedef struct _DV_NETADAPTER_DETAILS_CONTEXT
@@ -283,6 +307,7 @@ BOOLEAN NetworkAdapterQuerySupported(
     _In_ HANDLE DeviceHandle
     );
 
+_Success_(return)
 BOOLEAN NetworkAdapterQueryNdisVersion(
     _In_ HANDLE DeviceHandle,
     _Out_opt_ PUINT MajorVersion,
@@ -304,6 +329,7 @@ NTSTATUS NetworkAdapterQueryLinkState(
     _Out_ PNDIS_LINK_STATE State
     );
 
+_Success_(return)
 BOOLEAN NetworkAdapterQueryMediaType(
     _In_ HANDLE DeviceHandle,
     _Out_ PNDIS_PHYSICAL_MEDIUM Medium
@@ -319,6 +345,7 @@ ULONG64 NetworkAdapterQueryValue(
     _In_ NDIS_OID OpCode
     );
 
+_Success_(return)
 BOOLEAN QueryInterfaceRow(
     _In_ PDV_NETADAPTER_ID Id,
     _Out_ PMIB_IF_ROW2 InterfaceRow
@@ -507,12 +534,12 @@ typedef enum _DISKDRIVE_DETAILS_INDEX
     DISKDRIVE_DETAILS_INDEX_MFT_READ_BYTES,
     DISKDRIVE_DETAILS_INDEX_MFT_WRITE_BYTES,
 
-    DISKDRIVE_DETAILS_INDEX_ROOT_INDEX_READS,
-    DISKDRIVE_DETAILS_INDEX_ROOT_INDEX_WRITES,
-    DISKDRIVE_DETAILS_INDEX_ROOT_INDEX_READ_BYTES,
-    DISKDRIVE_DETAILS_INDEX_ROOT_INDEX_WRITE_BYTES,
+    //DISKDRIVE_DETAILS_INDEX_ROOT_INDEX_READS,
+    //DISKDRIVE_DETAILS_INDEX_ROOT_INDEX_WRITES,
+    //DISKDRIVE_DETAILS_INDEX_ROOT_INDEX_READ_BYTES,
+    //DISKDRIVE_DETAILS_INDEX_ROOT_INDEX_WRITE_BYTES,
 
-    DISKDRIVE_DETAILS_INDEX_BITMAP_READS,
+    /*DISKDRIVE_DETAILS_INDEX_BITMAP_READS,
     DISKDRIVE_DETAILS_INDEX_BITMAP_WRITES,
     DISKDRIVE_DETAILS_INDEX_BITMAP_READ_BYTES,
     DISKDRIVE_DETAILS_INDEX_BITMAP_WRITE_BYTES,
@@ -579,9 +606,8 @@ typedef enum _DISKDRIVE_DETAILS_INDEX
     DISKDRIVE_DETAILS_INDEX_ALLOCATE_CACHE,
     DISKDRIVE_DETAILS_INDEX_ALLOCATE_CACHE_CLUSTERS,
     DISKDRIVE_DETAILS_INDEX_ALLOCATE_CACHE_MISS,
-    DISKDRIVE_DETAILS_INDEX_ALLOCATE_CACHE_MISS_CLUSTERS,
+    DISKDRIVE_DETAILS_INDEX_ALLOCATE_CACHE_MISS_CLUSTERS,*/
 
-    DISKDRIVE_DETAILS_INDEX_LOGFILE_EXCEPTIONS,
     DISKDRIVE_DETAILS_INDEX_OTHER_EXCEPTIONS
 } DISKDRIVE_DETAILS_INDEX;
 
@@ -611,6 +637,7 @@ PPH_LIST DiskDriveQueryMountPointHandles(
     _In_ ULONG DeviceNumber
     );
 
+_Success_(return)
 BOOLEAN DiskDriveQueryDeviceInformation(
     _In_ HANDLE DeviceHandle,
     _Out_opt_ PPH_STRING* DiskVendor,
@@ -657,6 +684,7 @@ typedef struct _EXFAT_FILESYSTEM_STATISTICS
     EXFAT_STATISTICS ExFatStatistics;
 } EXFAT_FILESYSTEM_STATISTICS, *PEXFAT_FILESYSTEM_STATISTICS;
 
+_Success_(return)
 BOOLEAN DiskDriveQueryFileSystemInfo(
     _In_ HANDLE DeviceHandle,
     _Out_ USHORT* FileSystemType,
@@ -669,11 +697,13 @@ typedef struct _NTFS_VOLUME_INFO
     NTFS_EXTENDED_VOLUME_DATA ExtendedVolumeData;
 } NTFS_VOLUME_INFO, *PNTFS_VOLUME_INFO;
 
+_Success_(return)
 BOOLEAN DiskDriveQueryNtfsVolumeInfo(
     _In_ HANDLE DosDeviceHandle,
     _Out_ PNTFS_VOLUME_INFO VolumeInfo
     );
 
+_Success_(return)
 BOOLEAN DiskDriveQueryRefsVolumeInfo(
     _In_ HANDLE DosDeviceHandle,
     _Out_ PREFS_VOLUME_DATA_BUFFER VolumeInfo
@@ -765,7 +795,9 @@ typedef enum _SMART_ATTRIBUTE_ID
     SMART_ATTRIBUTE_ID_TOTAL_LBA_READ = 0xF2,
     // TODO: Add values 243-249
     SMART_ATTRIBUTE_ID_READ_ERROR_RETY_RATE = 0xFA,
-    // TODO: Add values 251-253
+    SMART_ATTRIBUTE_ID_MIN_SPARES_REMAINING = 0xFB,
+    SMART_ATTRIBUTE_ID_NEWLY_ADDED_BAD_FLASH_BLOCK = 0xFC,
+    // TODO: Add value 253
     SMART_ATTRIBUTE_ID_FREE_FALL_PROTECTION = 0xFE,
 } SMART_ATTRIBUTE_ID;
 

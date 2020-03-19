@@ -95,12 +95,6 @@ VOID UploadContextDeleteProcedure(
         context->TaskbarListClass = NULL;
     }
 
-    if (context->UploadThreadHandle)
-    {
-        NtClose(context->UploadThreadHandle);
-        context->UploadThreadHandle = NULL;
-    }
-
     PhClearReference(&context->ErrorString);
     PhClearReference(&context->FileName);
     PhClearReference(&context->BaseFileName);
@@ -161,6 +155,7 @@ PPH_STRING UpdateVersionString(
     return versionHeader;
 }
 
+_Success_(return >= 0)
 NTSTATUS HashFileAndResetPosition(
     _In_ HANDLE FileHandle,
     _In_ PLARGE_INTEGER FileSize,
@@ -168,7 +163,7 @@ NTSTATUS HashFileAndResetPosition(
     _Out_ PPH_STRING *HashString
     )
 {
-    NTSTATUS status;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
     IO_STATUS_BLOCK iosb;
     PH_HASH_CONTEXT hashContext;
     PPH_STRING hashString = NULL;
@@ -176,7 +171,7 @@ NTSTATUS HashFileAndResetPosition(
     FILE_POSITION_INFORMATION positionInfo;
     LONG priority;
     IO_PRIORITY_HINT ioPriority;
-    UCHAR buffer[PAGE_SIZE];
+    BYTE buffer[PAGE_SIZE];
     
     bytesRemaining = FileSize->QuadPart;
 
@@ -213,7 +208,7 @@ NTSTATUS HashFileAndResetPosition(
 
     if (NT_SUCCESS(status))
     {
-        UCHAR hash[32];
+        BYTE hash[32];
 
         switch (Algorithm)
         {
@@ -674,8 +669,11 @@ NTSTATUS UploadFileThreadStart(
     {
         BYTE buffer[PAGE_SIZE];
 
-        if (!context->UploadThreadHandle)
+        if (context->Cancel)
+        {
+            RaiseUploadError(context, L"Unable to complete the request.", STATUS_CANCELLED);
             goto CleanupExit;
+        }
 
         if (!NT_SUCCESS(status = NtReadFile(
             fileHandle,
@@ -706,18 +704,25 @@ NTSTATUS UploadFileThreadStart(
 
         {
             FLOAT percent = ((FLOAT)totalUploadedLength / context->TotalFileLength * 100);
-            PPH_STRING totalLength = PhFormatSize(context->TotalFileLength, ULONG_MAX);
-            PPH_STRING totalUploaded = PhFormatSize(totalUploadedLength, ULONG_MAX);
-            PPH_STRING totalSpeed = PhFormatSize(timeBitsPerSecond, ULONG_MAX);
-            PPH_STRING statusMessage = PhFormatString(
-                L"Uploaded: %s of %s (%.0f%%)\r\nSpeed: %s/s",
-                PhGetStringOrEmpty(totalUploaded),
-                PhGetStringOrEmpty(totalLength),
-                percent,
-                PhGetStringOrEmpty(totalSpeed)
-                );
+            PH_FORMAT format[9];
+            WCHAR string[MAX_PATH];
 
-            SendMessage(context->DialogHandle, TDM_UPDATE_ELEMENT_TEXT, TDE_CONTENT, (LPARAM)statusMessage->Buffer);
+            // L"Uploaded: %s of %s (%.0f%%)\r\nSpeed: %s/s"
+            PhInitFormatS(&format[0], L"Uploaded: ");
+            PhInitFormatSize(&format[1], totalUploadedLength);
+            PhInitFormatS(&format[2], L" of ");
+            PhInitFormatSize(&format[3], context->TotalFileLength);
+            PhInitFormatS(&format[4], L" (");
+            PhInitFormatF(&format[5], percent, 1);
+            PhInitFormatS(&format[6], L"%)\r\nSpeed: ");
+            PhInitFormatSize(&format[7], timeBitsPerSecond);
+            PhInitFormatS(&format[8], L"/s");
+
+            if (PhFormatToBuffer(format, RTL_NUMBER_OF(format), string, sizeof(string), NULL))
+            {
+                SendMessage(context->DialogHandle, TDM_UPDATE_ELEMENT_TEXT, TDE_CONTENT, (LPARAM)string);
+            }
+
             SendMessage(context->DialogHandle, TDM_SET_PROGRESS_BAR_POS, (WPARAM)percent, 0);
 
             if (context->TaskbarListClass)
@@ -729,11 +734,6 @@ NTSTATUS UploadFileThreadStart(
                     context->TotalFileLength
                     );
             }
-
-            PhDereferenceObject(statusMessage);
-            PhDereferenceObject(totalSpeed);
-            PhDereferenceObject(totalUploaded);
-            PhDereferenceObject(totalLength);
         }
     }
 
@@ -926,8 +926,11 @@ NTSTATUS UploadFileThreadStart(
         goto CleanupExit;
     }
 
-    if (!context->UploadThreadHandle)
+    if (context->Cancel)
+    {
+        RaiseUploadError(context, L"Unable to complete the request.", STATUS_CANCELLED);
         goto CleanupExit;
+    }
 
     if (!PhIsNullOrEmptyString(context->LaunchCommand))
     {

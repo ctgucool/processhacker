@@ -122,6 +122,7 @@ BOOLEAN NetworkAdapterQuerySupported(
     return ndisQuerySupported;
 }
 
+_Success_(return)
 BOOLEAN NetworkAdapterQueryNdisVersion(
     _In_ HANDLE DeviceHandle,
     _Out_opt_ PUINT MajorVersion,
@@ -293,6 +294,7 @@ NTSTATUS NetworkAdapterQueryLinkState(
     return status;
 }
 
+_Success_(return)
 BOOLEAN NetworkAdapterQueryMediaType(
     _In_ HANDLE DeviceHandle,
     _Out_ PNDIS_PHYSICAL_MEDIUM Medium
@@ -401,7 +403,7 @@ NTSTATUS NetworkAdapterQueryLinkSpeed(
 
     memset(&result, 0, sizeof(NDIS_LINK_SPEED));
 
-    status = NtDeviceIoControlFile(
+    if (NT_SUCCESS(status = NtDeviceIoControlFile(
         DeviceHandle,
         NULL,
         NULL,
@@ -412,9 +414,10 @@ NTSTATUS NetworkAdapterQueryLinkSpeed(
         sizeof(NDIS_OID),
         &result,
         sizeof(result)
-        );
-
-    *LinkSpeed = UInt32x32To64(result.XmitLinkSpeed, NDIS_UNIT_OF_MEASUREMENT);
+        )))
+    {
+        *LinkSpeed = UInt32x32To64(result.XmitLinkSpeed, NDIS_UNIT_OF_MEASUREMENT);
+    }
 
     return status;
 }
@@ -446,6 +449,7 @@ ULONG64 NetworkAdapterQueryValue(
     return 0;
 }
 
+_Success_(return)
 BOOLEAN QueryInterfaceRow(
     _In_ PDV_NETADAPTER_ID Id,
     _Out_ PMIB_IF_ROW2 InterfaceRow
@@ -526,7 +530,6 @@ PWSTR MediumTypeToString(
     return L"N/A";
 }
 
-
 //BOOLEAN NetworkAdapterQueryInternet(
 //    _Inout_ PDV_NETADAPTER_SYSINFO_CONTEXT Context,
 //    _In_ PPH_STRING IpAddress
@@ -534,11 +537,8 @@ PWSTR MediumTypeToString(
 //{
 //    // https://technet.microsoft.com/en-us/library/cc766017.aspx
 //    BOOLEAN socketResult = FALSE;
-//    WSADATA wsadata;
 //    DNS_STATUS dnsQueryStatus = DNS_ERROR_RCODE_NO_ERROR;
 //    PDNS_RECORD dnsQueryRecords = NULL;
-//
-//    WSAStartup(WINSOCK_VERSION, &wsadata);
 //
 //    __try
 //    {

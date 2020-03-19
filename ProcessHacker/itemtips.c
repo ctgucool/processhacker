@@ -136,7 +136,7 @@ PPH_STRING PhGetProcessTooltipText(
     // File information
 
     tempString = PhFormatImageVersionInfo(
-        Process->FileName,
+        Process->FileNameWin32,
         &Process->VersionInfo,
         &StandardIndent,
         0
@@ -397,7 +397,7 @@ PPH_STRING PhGetProcessTooltipText(
 
         PhInitializeStringBuilder(&notes, 40);
 
-        if (Process->FileName)
+        if (Process->FileNameWin32)
         {
             if (Process->VerifyResult == VrTrusted)
             {
@@ -420,7 +420,7 @@ PPH_STRING PhGetProcessTooltipText(
         {
             PhAppendFormatStringBuilder(
                 &notes,
-                L"    Image is probably packed (%u imports over %u modules).\n",
+                L"    Image is probably packed (%lu imports over %lu modules).\n",
                 Process->ImportFunctions,
                 Process->ImportModules
                 );
@@ -610,10 +610,9 @@ VOID PhpFillRunningTasks(
 
     ITaskService *taskService;
 
-    if (SUCCEEDED(CoCreateInstance(
-        &CLSID_TaskScheduler_I,
-        NULL,
-        CLSCTX_INPROC_SERVER,
+    if (SUCCEEDED(PhGetClassObject(
+        L"taskschd.dll",
+        &CLSID_TaskScheduler,
         &IID_ITaskService_I,
         &taskService
         )))

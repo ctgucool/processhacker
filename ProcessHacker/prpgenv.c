@@ -3,7 +3,7 @@
  *   Process properties: Environment page
  *
  * Copyright (C) 2009-2016 wj32
- * Copyright (C) 2018 dmex
+ * Copyright (C) 2018-2019 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -26,6 +26,7 @@
 #include <emenu.h>
 #include <settings.h>
 
+#include <apiimport.h>
 #include <phsettings.h>
 #include <procprp.h>
 #include <procprpp.h>
@@ -38,9 +39,11 @@ typedef enum _ENVIRONMENT_TREE_MENU_ITEM
     ENVIRONMENT_TREE_MENU_ITEM_HIDE_PROCESS_TYPE = 1,
     ENVIRONMENT_TREE_MENU_ITEM_HIDE_USER_TYPE,
     ENVIRONMENT_TREE_MENU_ITEM_HIDE_SYSTEM_TYPE,
+    ENVIRONMENT_TREE_MENU_ITEM_HIDE_CMD_TYPE,
     ENVIRONMENT_TREE_MENU_ITEM_HIGHLIGHT_PROCESS_TYPE,
     ENVIRONMENT_TREE_MENU_ITEM_HIGHLIGHT_USER_TYPE,
     ENVIRONMENT_TREE_MENU_ITEM_HIGHLIGHT_SYSTEM_TYPE,
+    ENVIRONMENT_TREE_MENU_ITEM_HIGHLIGHT_CMD_TYPE,
     ENVIRONMENT_TREE_MENU_ITEM_NEW_ENVIRONMENT_VARIABLE,
     ENVIRONMENT_TREE_MENU_ITEM_MAXIMUM
 } ENVIRONMENT_TREE_MENU_ITEM;
@@ -81,12 +84,20 @@ typedef struct _PHP_PROCESS_ENVIRONMENT_TREENODE
     PROCESS_ENVIRONMENT_TREENODE_TYPE Type;
     PPH_STRING NameText;
     PPH_STRING ValueText;
+    union
+    {
+        BOOLEAN Flags;
+        struct
+        {
+            BOOLEAN IsCmdVariable : 1;
+            BOOLEAN Spare : 7;
+        };
+    };
 } PHP_PROCESS_ENVIRONMENT_TREENODE, *PPHP_PROCESS_ENVIRONMENT_TREENODE;
 
-PPHP_PROCESS_ENVIRONMENT_TREENODE PhpAddEnvironmentChildNode(
+PPHP_PROCESS_ENVIRONMENT_TREENODE PhpAddEnvironmentNode(
     _In_ PPH_ENVIRONMENT_CONTEXT Context,
     _In_opt_ PPHP_PROCESS_ENVIRONMENT_TREENODE ParentNode,
-    _In_ ULONG Id,
     _In_ PROCESS_ENVIRONMENT_TREENODE_TYPE Type,
     _In_ PPH_STRING Name,
     _In_opt_ PPH_STRING Value
@@ -140,8 +151,11 @@ VOID PhpClearEnvironmentItems(
     for (i = 0; i < Context->Items.Count; i++)
     {
         item = PhItemArray(&Context->Items, i);
-        PhDereferenceObject(item->Name);
-        PhDereferenceObject(item->Value);
+
+        if (item->Name)
+            PhDereferenceObject(item->Name);
+        if (item->Value)
+            PhDereferenceObject(item->Value);
     }
 
     PhClearArray(&Context->Items);
@@ -165,29 +179,23 @@ VOID PhpRefreshEnvironmentList(
     ULONG i;
 
     PhpClearEnvironmentTree(Context);
-    processRootNode = PhpAddEnvironmentChildNode(Context, NULL, 0, 0, PhaCreateString(L"Process"), NULL);
-    userRootNode = PhpAddEnvironmentChildNode(Context, NULL, 0, 0, PhaCreateString(L"User"), NULL);
-    systemRootNode = PhpAddEnvironmentChildNode(Context, NULL, 0, 0, PhaCreateString(L"System"), NULL);
+    processRootNode = PhpAddEnvironmentNode(Context, NULL, PROCESS_ENVIRONMENT_TREENODE_TYPE_GROUP, PhaCreateString(L"Process"), NULL);
+    userRootNode = PhpAddEnvironmentNode(Context, NULL, PROCESS_ENVIRONMENT_TREENODE_TYPE_GROUP, PhaCreateString(L"User"), NULL);
+    systemRootNode = PhpAddEnvironmentNode(Context, NULL, PROCESS_ENVIRONMENT_TREENODE_TYPE_GROUP, PhaCreateString(L"System"), NULL);
 
-    if (DestroyEnvironmentBlock)
+    if (DestroyEnvironmentBlock_Import())
     {
         if (Context->SystemDefaultEnvironment)
         {
-            DestroyEnvironmentBlock(Context->SystemDefaultEnvironment);
+            DestroyEnvironmentBlock_Import()(Context->SystemDefaultEnvironment);
             Context->SystemDefaultEnvironment = NULL;
         }
 
         if (Context->UserDefaultEnvironment)
         {
-            DestroyEnvironmentBlock(Context->UserDefaultEnvironment);
+            DestroyEnvironmentBlock_Import()(Context->UserDefaultEnvironment);
             Context->UserDefaultEnvironment = NULL;
         }
-    }
-
-    if (CreateEnvironmentBlock)
-    {
-        CreateEnvironmentBlock(&Context->SystemDefaultEnvironment, NULL, FALSE);
-        CreateEnvironmentBlock(&Context->UserDefaultEnvironment, PhGetOwnTokenAttributes().TokenHandle, FALSE);
     }
 
     if (NT_SUCCESS(PhOpenProcess(
@@ -196,7 +204,23 @@ VOID PhpRefreshEnvironmentList(
         ProcessItem->ProcessId
         )))
     {
+        HANDLE tokenHandle;
         ULONG flags = 0;
+
+        if (CreateEnvironmentBlock_Import())
+        {
+            CreateEnvironmentBlock_Import()(&Context->SystemDefaultEnvironment, NULL, FALSE);
+
+            if (NT_SUCCESS(PhOpenProcessToken(
+                processHandle,
+                TOKEN_QUERY | TOKEN_DUPLICATE,
+                &tokenHandle
+                )))
+            {
+                CreateEnvironmentBlock_Import()(&Context->UserDefaultEnvironment, tokenHandle, FALSE);
+                NtClose(tokenHandle);
+            }
+        }
 
 #ifdef _WIN64
         if (ProcessItem->IsWow64)
@@ -216,10 +240,6 @@ VOID PhpRefreshEnvironmentList(
             {
                 PH_ENVIRONMENT_ITEM item;
 
-                // Don't display pairs with no name.
-                if (variable.Name.Length == 0)
-                    continue;
-
                 item.Name = PhCreateString2(&variable.Name);
                 item.Value = PhCreateString2(&variable.Value);
 
@@ -234,13 +254,14 @@ VOID PhpRefreshEnvironmentList(
 
     for (i = 0; i < Context->Items.Count; i++)
     {
+        PPHP_PROCESS_ENVIRONMENT_TREENODE node;
         PPHP_PROCESS_ENVIRONMENT_TREENODE parentNode;
         PROCESS_ENVIRONMENT_TREENODE_TYPE nodeType;
         PPH_STRING variableValue;
 
         item = PhItemArray(&Context->Items, i);
 
-        if (PhQueryEnvironmentVariable(
+        if (Context->SystemDefaultEnvironment && PhQueryEnvironmentVariable(
             Context->SystemDefaultEnvironment,
             &item->Name->sr,
             NULL
@@ -264,7 +285,7 @@ VOID PhpRefreshEnvironmentList(
                 PhDereferenceObject(variableValue);
             }
         }
-        else if (PhQueryEnvironmentVariable(
+        else if (Context->UserDefaultEnvironment && PhQueryEnvironmentVariable(
             Context->UserDefaultEnvironment,
             &item->Name->sr,
             NULL
@@ -294,7 +315,18 @@ VOID PhpRefreshEnvironmentList(
             parentNode = processRootNode;
         }
 
-        PhpAddEnvironmentChildNode(Context, parentNode, i, nodeType, item->Name, item->Value);
+        node = PhpAddEnvironmentNode(
+            Context,
+            parentNode,
+            nodeType,
+            item->Name,
+            item->Value
+            );
+
+        if (item->Name && item->Name->Buffer[0] == L'=')
+        {
+            node->IsCmdVariable = TRUE;
+        }
     }
 
     PhApplyTreeNewFilters(&Context->TreeFilterSupport);
@@ -378,6 +410,17 @@ INT_PTR CALLBACK PhpEditEnvDlgProc(
                     PPH_STRING value = PH_AUTO(PhGetWindowText(GetDlgItem(hwndDlg, IDC_VALUE)));
                     HANDLE processHandle;
                     LARGE_INTEGER timeout;
+
+                    if (PhGetIntegerSetting(L"EnableWarnings") && !PhShowConfirmMessage(
+                        hwndDlg,
+                        L"edit",
+                        L"the selected environment variable",
+                        L"Some programs may restrict access or ban your account when editing the environment variable(s) of the process.",
+                        FALSE
+                        ))
+                    {
+                        break;
+                    }
 
                     if (PhIsProcessSuspended(context->ProcessItem->ProcessId))
                     {
@@ -549,17 +592,6 @@ VOID PhpShowEnvironmentNodeContextMenu(
                     //PPH_ENVIRONMENT_ITEM item = PhItemArray(&Context->Items, node->Id);
                     BOOLEAN refresh;
 
-                    if (PhGetIntegerSetting(L"EnableWarnings") && !PhShowConfirmMessage(
-                        Context->WindowHandle,
-                        L"edit",
-                        L"the selected environment variable",
-                        L"Some programs may restrict access or ban your account when editing the environment variable(s) of the process.",
-                        FALSE
-                        ))
-                    {
-                        break;
-                    }
-
                     if (PhpShowEditEnvDialog(
                         Context->WindowHandle,
                         Context->ProcessItem,
@@ -726,6 +758,9 @@ VOID PhSetOptionsEnvironmentList(
     case ENVIRONMENT_TREE_MENU_ITEM_HIDE_SYSTEM_TYPE:
         Context->HideSystemEnvironment = !Context->HideSystemEnvironment;
         break;
+    case ENVIRONMENT_TREE_MENU_ITEM_HIDE_CMD_TYPE:
+        Context->HideCmdTypeEnvironment = !Context->HideCmdTypeEnvironment;
+        break;
     case ENVIRONMENT_TREE_MENU_ITEM_HIGHLIGHT_PROCESS_TYPE:
         Context->HighlightProcessEnvironment = !Context->HighlightProcessEnvironment;
         break;
@@ -735,13 +770,16 @@ VOID PhSetOptionsEnvironmentList(
     case ENVIRONMENT_TREE_MENU_ITEM_HIGHLIGHT_SYSTEM_TYPE:
         Context->HighlightSystemEnvironment = !Context->HighlightSystemEnvironment;
         break;
+    case ENVIRONMENT_TREE_MENU_ITEM_HIGHLIGHT_CMD_TYPE:
+        Context->HighlightCmdEnvironment = !Context->HighlightCmdEnvironment;
+        break;
     }
 }
 
 BOOLEAN PhpEnvironmentNodeHashtableEqualFunction(
     _In_ PVOID Entry1,
     _In_ PVOID Entry2
-)
+    )
 {
     PPHP_PROCESS_ENVIRONMENT_TREENODE poolTagNode1 = *(PPHP_PROCESS_ENVIRONMENT_TREENODE *)Entry1;
     PPHP_PROCESS_ENVIRONMENT_TREENODE poolTagNode2 = *(PPHP_PROCESS_ENVIRONMENT_TREENODE *)Entry2;
@@ -751,14 +789,14 @@ BOOLEAN PhpEnvironmentNodeHashtableEqualFunction(
 
 ULONG PhpEnvironmentNodeHashtableHashFunction(
     _In_ PVOID Entry
-)
+    )
 {
     return PhHashStringRef(&(*(PPHP_PROCESS_ENVIRONMENT_TREENODE*)Entry)->NameText->sr, TRUE);
 }
 
 VOID PhpDestroyEnvironmentNode(
     _In_ PPHP_PROCESS_ENVIRONMENT_TREENODE Node
-)
+    )
 {
     if (Node->NameText)
         PhDereferenceObject(Node->NameText);
@@ -768,10 +806,11 @@ VOID PhpDestroyEnvironmentNode(
     PhFree(Node);
 }
 
-PPHP_PROCESS_ENVIRONMENT_TREENODE PhpAddEnvironmentRootNode(
+PPHP_PROCESS_ENVIRONMENT_TREENODE PhpAddEnvironmentNode(
     _In_ PPH_ENVIRONMENT_CONTEXT Context,
+    _In_opt_ PPHP_PROCESS_ENVIRONMENT_TREENODE ParentNode,
     _In_ PROCESS_ENVIRONMENT_TREENODE_TYPE Type,
-    _In_ PPH_STRING KeyPath,
+    _In_ PPH_STRING Name,
     _In_opt_ PPH_STRING Value
     )
 {
@@ -785,37 +824,15 @@ PPHP_PROCESS_ENVIRONMENT_TREENODE PhpAddEnvironmentRootNode(
     node->Node.TextCacheSize = ENVIRONMENT_COLUMN_ITEM_MAXIMUM;
     node->Children = PhCreateList(1);
 
-    PhReferenceObject(KeyPath);
     node->Type = Type;
-    node->NameText = KeyPath;
-
-    if (Value)
-    {
-        PhReferenceObject(Value);
-        node->ValueText = Value;
-    }
+    PhSetReference(&node->NameText, Name);
+    if (Value) PhSetReference(&node->ValueText, Value);
 
     PhAddEntryHashtable(Context->NodeHashtable, &node);
     PhAddItemList(Context->NodeList, node);
 
     if (Context->TreeFilterSupport.FilterList)
         node->Node.Visible = PhApplyTreeNewFiltersToNode(&Context->TreeFilterSupport, &node->Node);
-
-    return node;
-}
-
-PPHP_PROCESS_ENVIRONMENT_TREENODE PhpAddEnvironmentChildNode(
-    _In_ PPH_ENVIRONMENT_CONTEXT Context,
-    _In_opt_ PPHP_PROCESS_ENVIRONMENT_TREENODE ParentNode,
-    _In_ ULONG Id,
-    _In_ PROCESS_ENVIRONMENT_TREENODE_TYPE Type,
-    _In_ PPH_STRING Name,
-    _In_opt_ PPH_STRING Value
-    )
-{
-    PPHP_PROCESS_ENVIRONMENT_TREENODE node;
-
-    node = PhpAddEnvironmentRootNode(Context, Type, Name, Value);
 
     if (ParentNode)
     {
@@ -840,7 +857,7 @@ PPHP_PROCESS_ENVIRONMENT_TREENODE PhpAddEnvironmentChildNode(
 PPHP_PROCESS_ENVIRONMENT_TREENODE PhpFindEnvironmentNode(
     _In_ PPH_ENVIRONMENT_CONTEXT Context,
     _In_ PWSTR KeyPath
-)
+    )
 {
     PHP_PROCESS_ENVIRONMENT_TREENODE lookupWindowNode;
     PPHP_PROCESS_ENVIRONMENT_TREENODE lookupWindowNodePtr = &lookupWindowNode;
@@ -862,7 +879,7 @@ PPHP_PROCESS_ENVIRONMENT_TREENODE PhpFindEnvironmentNode(
 VOID PhpRemoveEnvironmentNode(
     _In_ PPH_ENVIRONMENT_CONTEXT Context,
     _In_ PPHP_PROCESS_ENVIRONMENT_TREENODE Node
-)
+    )
 {
     ULONG index = 0;
 
@@ -1057,7 +1074,9 @@ BOOLEAN NTAPI PhpEnvironmentTreeNewCallback(
             }
             else
             {
-                if (context->HighlightProcessEnvironment && node->Type == PROCESS_ENVIRONMENT_TREENODE_TYPE_PROCESS)
+                if (context->HighlightCmdEnvironment && node->IsCmdVariable)
+                    getNodeColor->BackColor = PhCsColorDebuggedProcesses;
+                else if (context->HighlightProcessEnvironment && node->Type == PROCESS_ENVIRONMENT_TREENODE_TYPE_PROCESS)
                     getNodeColor->BackColor = PhCsColorServiceProcesses;
                 else if (context->HighlightUserEnvironment && node->Type == PROCESS_ENVIRONMENT_TREENODE_TYPE_USER)
                     getNodeColor->BackColor = PhCsColorOwnProcesses;
@@ -1210,6 +1229,8 @@ VOID PhpDeleteEnvironmentTree(
     _In_ PPH_ENVIRONMENT_CONTEXT Context
     )
 {
+    PhDeleteTreeNewFilterSupport(&Context->TreeFilterSupport);
+
     for (ULONG i = 0; i < Context->NodeList->Count; i++)
     {
         PhpDestroyEnvironmentNode(Context->NodeList->Items[i]);
@@ -1237,6 +1258,8 @@ BOOLEAN PhpProcessEnvironmentTreeFilterCallback(
     if (context->HideUserEnvironment && environmentNode->Type == PROCESS_ENVIRONMENT_TREENODE_TYPE_USER)
         return FALSE;
     if (context->HideSystemEnvironment && environmentNode->Type == PROCESS_ENVIRONMENT_TREENODE_TYPE_SYSTEM)
+        return FALSE;
+    if (context->HideCmdTypeEnvironment && environmentNode->IsCmdVariable)
         return FALSE;
 
     if (PhIsNullOrEmptyString(context->SearchboxText))
@@ -1306,6 +1329,9 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
         break;
     case WM_DESTROY:
         {
+            PhRemoveTreeNewFilter(&context->TreeFilterSupport, context->TreeFilterEntry);
+            if (context->SearchboxText) PhDereferenceObject(context->SearchboxText);
+
             PhSaveSettingsEnvironmentList(context);
             PhpDeleteEnvironmentTree(context);
 
@@ -1313,12 +1339,12 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
             PhDeleteArray(&context->Items);
             PhClearReference(&context->StatusMessage);
 
-            if (DestroyEnvironmentBlock)
+            if (DestroyEnvironmentBlock_Import())
             {
                 if (context->SystemDefaultEnvironment)
-                    DestroyEnvironmentBlock(context->SystemDefaultEnvironment);
+                    DestroyEnvironmentBlock_Import()(context->SystemDefaultEnvironment);
                 if (context->UserDefaultEnvironment)
-                    DestroyEnvironmentBlock(context->UserDefaultEnvironment);
+                    DestroyEnvironmentBlock_Import()(context->UserDefaultEnvironment);
             }
 
             PhFree(context);
@@ -1372,9 +1398,11 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
                     PPH_EMENU_ITEM processMenuItem;
                     PPH_EMENU_ITEM userMenuItem;
                     PPH_EMENU_ITEM systemMenuItem;
+                    PPH_EMENU_ITEM cmdMenuItem;
                     PPH_EMENU_ITEM highlightProcessMenuItem;
                     PPH_EMENU_ITEM highlightUserMenuItem;
                     PPH_EMENU_ITEM highlightSystemMenuItem;
+                    PPH_EMENU_ITEM highlightCmdMenuItem;
                     PPH_EMENU_ITEM newProcessMenuItem;
                     PPH_EMENU_ITEM selectedItem;
 
@@ -1383,19 +1411,23 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
                     processMenuItem = PhCreateEMenuItem(0, ENVIRONMENT_TREE_MENU_ITEM_HIDE_PROCESS_TYPE, L"Hide process", NULL, NULL);
                     userMenuItem = PhCreateEMenuItem(0, ENVIRONMENT_TREE_MENU_ITEM_HIDE_USER_TYPE, L"Hide user", NULL, NULL);
                     systemMenuItem = PhCreateEMenuItem(0, ENVIRONMENT_TREE_MENU_ITEM_HIDE_SYSTEM_TYPE, L"Hide system", NULL, NULL);
+                    cmdMenuItem = PhCreateEMenuItem(0, ENVIRONMENT_TREE_MENU_ITEM_HIDE_CMD_TYPE, L"Hide cmd", NULL, NULL);
                     highlightProcessMenuItem = PhCreateEMenuItem(0, ENVIRONMENT_TREE_MENU_ITEM_HIGHLIGHT_PROCESS_TYPE, L"Highlight process", NULL, NULL);
                     highlightUserMenuItem = PhCreateEMenuItem(0, ENVIRONMENT_TREE_MENU_ITEM_HIGHLIGHT_USER_TYPE, L"Highlight user", NULL, NULL);
                     highlightSystemMenuItem = PhCreateEMenuItem(0, ENVIRONMENT_TREE_MENU_ITEM_HIGHLIGHT_SYSTEM_TYPE, L"Highlight system", NULL, NULL);
+                    highlightCmdMenuItem = PhCreateEMenuItem(0, ENVIRONMENT_TREE_MENU_ITEM_HIGHLIGHT_CMD_TYPE, L"Highlight cmd", NULL, NULL);
                     newProcessMenuItem = PhCreateEMenuItem(0, ENVIRONMENT_TREE_MENU_ITEM_NEW_ENVIRONMENT_VARIABLE, L"New variable...", NULL, NULL);
 
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, processMenuItem, ULONG_MAX);
                     PhInsertEMenuItem(menu, userMenuItem, ULONG_MAX);
                     PhInsertEMenuItem(menu, systemMenuItem, ULONG_MAX);
+                    PhInsertEMenuItem(menu, cmdMenuItem, ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
                     PhInsertEMenuItem(menu, highlightProcessMenuItem, ULONG_MAX);
                     PhInsertEMenuItem(menu, highlightUserMenuItem, ULONG_MAX);
                     PhInsertEMenuItem(menu, highlightSystemMenuItem, ULONG_MAX);
+                    PhInsertEMenuItem(menu, highlightCmdMenuItem, ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
                     PhInsertEMenuItem(menu, newProcessMenuItem, ULONG_MAX);
 
@@ -1405,12 +1437,16 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
                         userMenuItem->Flags |= PH_EMENU_CHECKED;
                     if (context->HideSystemEnvironment)
                         systemMenuItem->Flags |= PH_EMENU_CHECKED;
+                    if (context->HideCmdTypeEnvironment)
+                        cmdMenuItem->Flags |= PH_EMENU_CHECKED;
                     if (context->HighlightProcessEnvironment)
                         highlightProcessMenuItem->Flags |= PH_EMENU_CHECKED;
                     if (context->HighlightUserEnvironment)
                         highlightUserMenuItem->Flags |= PH_EMENU_CHECKED;
                     if (context->HighlightSystemEnvironment)
                         highlightSystemMenuItem->Flags |= PH_EMENU_CHECKED;
+                    if (context->HighlightCmdEnvironment)
+                        highlightCmdMenuItem->Flags |= PH_EMENU_CHECKED;
 
                     selectedItem = PhShowEMenu(
                         menu,
@@ -1426,17 +1462,6 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
                         if (selectedItem->Id == ENVIRONMENT_TREE_MENU_ITEM_NEW_ENVIRONMENT_VARIABLE)
                         {
                             BOOLEAN refresh;
-
-                            if (PhGetIntegerSetting(L"EnableWarnings") && !PhShowConfirmMessage(
-                                hwndDlg,
-                                L"create",
-                                L"new environment variable(s)",
-                                L"Some programs may restrict access or ban your account when creating new environment variable(s).",
-                                FALSE
-                                ))
-                            {
-                                break;
-                            }
 
                             if (PhpShowEditEnvDialog(hwndDlg, processItem, L"", NULL, &refresh) == IDOK && refresh)
                             {
@@ -1467,17 +1492,6 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
                     if (!item || item->Type == PROCESS_ENVIRONMENT_TREENODE_TYPE_GROUP)
                         break;
 
-                    if (PhGetIntegerSetting(L"EnableWarnings") && !PhShowConfirmMessage(
-                        hwndDlg,
-                        L"edit",
-                        L"the selected environment variable",
-                        L"Some programs may restrict access or ban your account when editing the environment variable(s) of the process.",
-                        FALSE
-                        ))
-                    {
-                        break;
-                    }
-
                     if (PhpShowEditEnvDialog(
                         hwndDlg,
                         context->ProcessItem,
@@ -1502,6 +1516,18 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
             case PSN_QUERYINITIALFOCUS:
                 SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, (LPARAM)GetDlgItem(hwndDlg, IDC_REFRESH));
                 return TRUE;
+            }
+        }
+        break;
+    case WM_KEYDOWN:
+        {
+            if (LOWORD(wParam) == 'K')
+            {
+                if (GetKeyState(VK_CONTROL) < 0)
+                {
+                    SetFocus(context->SearchWindowHandle);
+                    return TRUE;
+                }
             }
         }
         break;

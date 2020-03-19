@@ -3,7 +3,7 @@
  *   window properties
  *
  * Copyright (C) 2011 wj32
- * Copyright (C) 2018 dmex
+ * Copyright (C) 2018-2019 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -23,6 +23,7 @@
 
 #include "wndexp.h"
 #include "resource.h"
+#include <appresolver.h>
 #include <workqueue.h>
 #include <symprv.h>
 
@@ -34,9 +35,9 @@
 
 typedef struct _WINDOW_PROPERTIES_CONTEXT
 {
-    LONG RefCount;
-    HWND ParentWindowHandle;
     HWND WindowHandle;
+    HWND ParentWindowHandle;
+    HWND ListViewHandle;
     CLIENT_ID ClientId;
     PH_INITONCE SymbolProviderInitOnce;
     PPH_SYMBOL_PROVIDER SymbolProvider;
@@ -80,6 +81,7 @@ typedef enum _WINDOW_PROPERTIES_CATEGORY
 
 typedef enum _NETADAPTER_DETAILS_INDEX
 {
+    WINDOW_PROPERTIES_INDEX_APPID,
     WINDOW_PROPERTIES_INDEX_TEXT,
     WINDOW_PROPERTIES_INDEX_THREAD,
     WINDOW_PROPERTIES_INDEX_RECT,
@@ -89,11 +91,14 @@ typedef enum _NETADAPTER_DETAILS_INDEX
     WINDOW_PROPERTIES_INDEX_MENUHANDLE,
     WINDOW_PROPERTIES_INDEX_USERDATA,
     WINDOW_PROPERTIES_INDEX_UNICODE,
+    WINDOW_PROPERTIES_INDEX_WNDEXTRA,
     WINDOW_PROPERTIES_INDEX_WNDPROC,
     WINDOW_PROPERTIES_INDEX_DLGPROC,
     WINDOW_PROPERTIES_INDEX_DLGCTLID,
+    WINDOW_PROPERTIES_INDEX_FONTNAME,
     WINDOW_PROPERTIES_INDEX_STYLES,
     WINDOW_PROPERTIES_INDEX_EXSTYLES,
+    WINDOW_PROPERTIES_INDEX_AUTOMATION,
 
     WINDOW_PROPERTIES_INDEX_CLASS_NAME,
     WINDOW_PROPERTIES_INDEX_CLASS_ATOM,
@@ -106,15 +111,6 @@ typedef enum _NETADAPTER_DETAILS_INDEX
     WINDOW_PROPERTIES_INDEX_CLASS_MENUNAME,
     WINDOW_PROPERTIES_INDEX_CLASS_WNDPROC
 } NETADAPTER_DETAILS_INDEX;
-
-
-VOID WepReferenceWindowPropertiesContext(
-    _Inout_ PWINDOW_PROPERTIES_CONTEXT Context
-    );
-
-VOID WepDereferenceWindowPropertiesContext(
-    _Inout_ PWINDOW_PROPERTIES_CONTEXT Context
-    );
 
 NTSTATUS WepPropertiesThreadStart(
     _In_ PVOID Parameter
@@ -207,6 +203,39 @@ static STRING_INTEGER_PAIR WepClassStylePairs[] =
     DEFINE_PAIR(CS_DROPSHADOW)
 };
 
+PPH_OBJECT_TYPE WeWindowItemType = NULL;
+
+VOID NTAPI WeWindowItemDeleteProcedure(
+    _In_ PVOID Object,
+    _In_ ULONG Flags
+    )
+{
+    PWINDOW_PROPERTIES_CONTEXT context = Object;
+
+    PLIST_ENTRY listEntry;
+
+    PhClearReference(&context->SymbolProvider);
+
+    // Destroy results that have not been processed by any property pages.
+
+    listEntry = context->ResolveListHead.Flink;
+
+    while (listEntry != &context->ResolveListHead)
+    {
+        PSYMBOL_RESOLVE_CONTEXT resolveContext;
+
+        resolveContext = CONTAINING_RECORD(listEntry, SYMBOL_RESOLVE_CONTEXT, ListEntry);
+        listEntry = listEntry->Flink;
+
+        PhClearReference(&resolveContext->Symbol);
+        PhFree(resolveContext);
+    }
+
+    PhClearReference(&context->WndProcSymbol);
+    PhClearReference(&context->DlgProcSymbol);
+    PhClearReference(&context->ClassWndProcSymbol);
+}
+
 VOID WeShowWindowProperties(
     _In_ HWND ParentWindowHandle,
     _In_ HWND WindowHandle
@@ -216,60 +245,23 @@ VOID WeShowWindowProperties(
     ULONG threadId;
     ULONG processId;
 
-    context = PhAllocateZero(sizeof(WINDOW_PROPERTIES_CONTEXT));
-    context->RefCount = 1;
-    context->ParentWindowHandle = ParentWindowHandle;
+    if (!WeWindowItemType)
+        WeWindowItemType = PhCreateObjectType(L"WindowItemType", 0, WeWindowItemDeleteProcedure);
+
+    context = PhCreateObjectZero(sizeof(WINDOW_PROPERTIES_CONTEXT), WeWindowItemType);
     context->WindowHandle = WindowHandle;
+    context->ParentWindowHandle = ParentWindowHandle;
+
+    PhInitializeInitOnce(&context->SymbolProviderInitOnce);
+    InitializeListHead(&context->ResolveListHead);
+    PhInitializeQueuedLock(&context->ResolveListLock);
 
     processId = 0;
     threadId = GetWindowThreadProcessId(WindowHandle, &processId);
     context->ClientId.UniqueProcess = UlongToHandle(processId);
     context->ClientId.UniqueThread = UlongToHandle(threadId);
-    PhInitializeInitOnce(&context->SymbolProviderInitOnce);
-    InitializeListHead(&context->ResolveListHead);
-    PhInitializeQueuedLock(&context->ResolveListLock);
 
     PhCreateThread2(WepPropertiesThreadStart, context);
-}
-
-VOID WepReferenceWindowPropertiesContext(
-    _Inout_ PWINDOW_PROPERTIES_CONTEXT Context
-    )
-{
-    _InterlockedIncrement(&Context->RefCount);
-}
-
-VOID WepDereferenceWindowPropertiesContext(
-    _Inout_ PWINDOW_PROPERTIES_CONTEXT Context
-    )
-{
-    if (_InterlockedDecrement(&Context->RefCount) == 0)
-    {
-        PLIST_ENTRY listEntry;
-
-        PhClearReference(&Context->SymbolProvider);
-
-        // Destroy results that have not been processed by any property pages.
-
-        listEntry = Context->ResolveListHead.Flink;
-
-        while (listEntry != &Context->ResolveListHead)
-        {
-            PSYMBOL_RESOLVE_CONTEXT resolveContext;
-
-            resolveContext = CONTAINING_RECORD(listEntry, SYMBOL_RESOLVE_CONTEXT, ListEntry);
-            listEntry = listEntry->Flink;
-
-            PhClearReference(&resolveContext->Symbol);
-            PhFree(resolveContext);
-        }
-
-        PhClearReference(&Context->WndProcSymbol);
-        PhClearReference(&Context->DlgProcSymbol);
-        PhClearReference(&Context->ClassWndProcSymbol);
-
-        PhFree(Context);
-    }
 }
 
 NTSTATUS WepPropertiesThreadStart(
@@ -282,7 +274,7 @@ NTSTATUS WepPropertiesThreadStart(
 
     PhInitializeAutoPool(&autoPool);
 
-    if (propContext = HdCreatePropContext(PhaFormatString(L"Window %Ix", context->WindowHandle)->Buffer))
+    if (propContext = HdCreatePropContext(PhaFormatString(L"Window %Ix", (ULONG_PTR)context->WindowHandle)->Buffer))
     {
         PPV_PROPPAGECONTEXT newPage;
 
@@ -313,6 +305,8 @@ NTSTATUS WepPropertiesThreadStart(
 
     PhDeleteAutoPool(&autoPool);
 
+    PhDereferenceObject(context);
+
     return STATUS_SUCCESS;
 }
 
@@ -322,6 +316,9 @@ BOOLEAN NTAPI EnumGenericModulesCallback(
     )
 {
     PWINDOW_PROPERTIES_CONTEXT context = Context;
+
+    if (!context)
+        return FALSE;
 
     PhLoadModuleSymbolProvider(context->SymbolProvider, Module->FileName->Buffer,
         (ULONG64)Module->BaseAddress, Module->Size);
@@ -353,7 +350,7 @@ NTSTATUS WepResolveSymbolFunction(
     // Fail if we don't have a symbol.
     if (!context->Symbol)
     {
-        WepDereferenceWindowPropertiesContext(context->Context);
+        PhDereferenceObject(context->Context);
         PhFree(context);
         return STATUS_SUCCESS;
     }
@@ -364,7 +361,7 @@ NTSTATUS WepResolveSymbolFunction(
 
     PostMessage(context->NotifyWindow, WEM_RESOLVE_DONE, 0, (LPARAM)context);
 
-    WepDereferenceWindowPropertiesContext(context->Context);
+    PhDereferenceObject(context->Context);
 
     return STATUS_SUCCESS;
 }
@@ -384,7 +381,7 @@ VOID WepQueueResolveSymbol(
         PhLoadSymbolProviderOptions(Context->SymbolProvider);
     }
 
-    WepReferenceWindowPropertiesContext(Context);
+    PhReferenceObject(Context);
 
     resolveContext = PhAllocateZero(sizeof(SYMBOL_RESOLVE_CONTEXT));
     resolveContext->Address = Address;
@@ -461,15 +458,19 @@ VOID WepRefreshWindowGeneralInfo(
     MONITORINFO monitorInfo = { sizeof(MONITORINFO) };
     HANDLE processHandle;
     PPH_STRING fileName = NULL;
+    PPH_STRING appIdText;
     HMENU menuHandle;
     PVOID instanceHandle;
     PVOID userdataHandle;
     ULONG windowId;
+    ULONG windowExtra;
+    HFONT fontHandle;
 
     menuHandle = GetMenu(Context->WindowHandle);
     instanceHandle = (PVOID)GetWindowLongPtr(Context->WindowHandle, GWLP_HINSTANCE);
     userdataHandle = (PVOID)GetWindowLongPtr(Context->WindowHandle, GWLP_USERDATA);
     windowId = (ULONG)GetWindowLongPtr(Context->WindowHandle, GWLP_ID);
+    windowExtra = (ULONG)GetClassLongPtr(Context->WindowHandle, GCL_CBWNDEXTRA);
     // TODO: GetWindowLongPtr(Context->WindowHandle, GCLP_WNDPROC);
 
     PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_TEXT, 1, PhGetStringOrEmpty(PH_AUTO(PhGetWindowText(Context->WindowHandle))));
@@ -508,7 +509,7 @@ VOID WepRefreshWindowGeneralInfo(
     {
         if (NT_SUCCESS(PhGetProcessMappedFileName(processHandle, instanceHandle, &fileName)))
         {
-            PhMoveReference(&fileName, PhResolveDevicePrefix(fileName));
+            PhMoveReference(&fileName, PhGetFileName(fileName));
             PhMoveReference(&fileName, PhGetBaseName(fileName));
         }
 
@@ -519,7 +520,7 @@ VOID WepRefreshWindowGeneralInfo(
     {
         PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_INSTANCE, 1, PhaFormatString(
             L"0x%Ix (%s)", 
-            instanceHandle,
+            (ULONG_PTR)instanceHandle,
             PhGetStringOrEmpty(fileName)
             )->Buffer);
         PhDereferenceObject(fileName);
@@ -528,14 +529,29 @@ VOID WepRefreshWindowGeneralInfo(
     {
         PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_INSTANCE, 1, PhaFormatString(
             L"0x%Ix", 
-            instanceHandle
+            (ULONG_PTR)instanceHandle
             )->Buffer);
     }
 
-    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_MENUHANDLE, 1, PhaFormatString(L"0x%Ix", menuHandle)->Buffer);
-    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_USERDATA, 1, PhaFormatString(L"0x%Ix", userdataHandle)->Buffer);
+    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_MENUHANDLE, 1, PhaFormatString(L"0x%Ix", (ULONG_PTR)menuHandle)->Buffer);
+    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_USERDATA, 1, PhaFormatString(L"0x%Ix", (ULONG_PTR)userdataHandle)->Buffer);
     PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_UNICODE, 1, IsWindowUnicode(Context->WindowHandle) ? L"Yes" : L"No");
+    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_WNDEXTRA, 1, PhaFormatSize(windowExtra, ULONG_MAX)->Buffer);
     PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_DLGCTLID, 1, PhaFormatString(L"%lu", windowId)->Buffer);
+
+    if (fontHandle = (HFONT)SendMessage(Context->WindowHandle, WM_GETFONT, 0, 0))
+    {
+        LOGFONT logFont;
+
+        if (GetObject(fontHandle, sizeof(LOGFONT), &logFont))
+            PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_FONTNAME, 1, logFont.lfFaceName);
+        else
+            PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_FONTNAME, 1, L"N/A");
+    }
+    else
+    {
+        PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_FONTNAME, 1, L"N/A");
+    }
 
     //ULONG version;
     //if (SendMessageTimeout(Context->WindowHandle, CCM_GETVERSION, 0, 0, SMTO_ABORTIFHUNG, 5000, &version))
@@ -554,6 +570,12 @@ VOID WepRefreshWindowGeneralInfo(
     }
 
     WepRefreshWindowGeneralInfoSymbols(ListViewHandle, Context);
+
+    if (PhAppResolverGetAppIdForWindow(Context->WindowHandle, &appIdText))
+    {
+        PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_APPID, 1, appIdText->Buffer);
+        PhDereferenceObject(appIdText);
+    }
 }
 
 VOID WepRefreshWindowStyles(
@@ -688,7 +710,7 @@ VOID WepRefreshClassModule(
     {
         if (NT_SUCCESS(PhGetProcessMappedFileName(processHandle, instanceHandle, &fileName)))
         {
-            PhMoveReference(&fileName, PhResolveDevicePrefix(fileName));
+            PhMoveReference(&fileName, PhGetFileName(fileName));
             PhMoveReference(&fileName, PhGetBaseName(fileName));
         }
 
@@ -699,7 +721,7 @@ VOID WepRefreshClassModule(
     {
         PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_INSTANCE, 1, PhaFormatString(
             L"0x%Ix (%s)",
-            instanceHandle,
+            (ULONG_PTR)instanceHandle,
             PhGetStringOrEmpty(fileName)
             )->Buffer);
         PhDereferenceObject(fileName);
@@ -708,7 +730,7 @@ VOID WepRefreshClassModule(
     {
         PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_INSTANCE, 1, PhaFormatString(
             L"0x%Ix",
-            instanceHandle
+            (ULONG_PTR)instanceHandle
             )->Buffer);
     }
 }
@@ -722,14 +744,14 @@ VOID WepRefreshWindowClassInfoSymbols(
     {
         PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_WNDPROC, 1, PhaFormatString(
             L"0x%Ix (resolving...)",
-            Context->ClassInfo.lpfnWndProc
+            (ULONG_PTR)Context->ClassInfo.lpfnWndProc
             )->Buffer);
     }
     else if (Context->ClassWndProcSymbol)
     {
         PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_WNDPROC, 1, PhaFormatString(
             L"0x%Ix (%s)",
-            Context->ClassInfo.lpfnWndProc,
+            (ULONG_PTR)Context->ClassInfo.lpfnWndProc,
             Context->ClassWndProcSymbol->Buffer
             )->Buffer);
     }
@@ -737,7 +759,7 @@ VOID WepRefreshWindowClassInfoSymbols(
     {
         PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_WNDPROC, 1, PhaFormatString(
             L"0x%Ix",
-            Context->ClassInfo.lpfnWndProc
+            (ULONG_PTR)Context->ClassInfo.lpfnWndProc
             )->Buffer);
     }
     else
@@ -755,18 +777,18 @@ VOID WepRefreshWindowClassInfo(
     WCHAR className[256];
 
     if (!GetClassName(Context->WindowHandle, className, RTL_NUMBER_OF(className)))
-        className[0] = 0;
+        className[0] = UNICODE_NULL;
 
     Context->ClassInfo.cbSize = sizeof(WNDCLASSEX);
     GetClassInfoEx(NULL, className, &Context->ClassInfo);
 
     PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_NAME, 1, className);
-    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_ATOM, 1, PhaFormatString(L"0x%x", GetClassWord(Context->WindowHandle, GCW_ATOM))->Buffer);
-    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_LARGEICON, 1, PhaFormatString(L"0x%Ix", Context->ClassInfo.hIcon)->Buffer);
-    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_SMALLICON, 1, PhaFormatString(L"0x%Ix", Context->ClassInfo.hIconSm)->Buffer);
-    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_MENUNAME, 1, PhaFormatString(L"0x%Ix", Context->ClassInfo.lpszMenuName)->Buffer);
-    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_CURSOR, 1, PhaFormatString(L"0x%Ix", Context->ClassInfo.hCursor)->Buffer);
-    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_BACKBRUSH, 1, PhaFormatString(L"0x%Ix", Context->ClassInfo.hbrBackground)->Buffer);
+    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_ATOM, 1, PhaFormatString(L"0x%Ix", GetClassLongPtr(Context->WindowHandle, GCW_ATOM))->Buffer);
+    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_LARGEICON, 1, PhaFormatString(L"0x%Ix", (ULONG_PTR)Context->ClassInfo.hIcon)->Buffer);
+    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_SMALLICON, 1, PhaFormatString(L"0x%Ix", (ULONG_PTR)Context->ClassInfo.hIconSm)->Buffer);
+    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_MENUNAME, 1, PhaFormatString(L"0x%Ix", (ULONG_PTR)Context->ClassInfo.lpszMenuName)->Buffer);
+    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_CURSOR, 1, PhaFormatString(L"0x%Ix", (ULONG_PTR)Context->ClassInfo.hCursor)->Buffer);
+    PhSetListViewSubItem(ListViewHandle, WINDOW_PROPERTIES_INDEX_CLASS_BACKBRUSH, 1, PhaFormatString(L"0x%Ix", (ULONG_PTR)Context->ClassInfo.hbrBackground)->Buffer);
 
     WepRefreshClassStyles(ListViewHandle, Context);
     WepRefreshClassModule(ListViewHandle, Context);
@@ -780,6 +802,43 @@ VOID WepRefreshWindowClassInfo(
     WepRefreshWindowClassInfoSymbols(ListViewHandle, Context);
 }
 
+static BOOLEAN WepWindowHasAutomationProvider(
+    _In_ HWND WindowHandle
+    )
+{
+    static PH_INITONCE initOnce = PH_INITONCE_INIT;
+    static BOOL (WINAPI *UiaHasServerSideProvider_I)(
+        _In_ HWND WindowHandle
+        );
+
+    if (PhBeginInitOnce(&initOnce))
+    {
+        HANDLE moduleHandle;
+
+        if (moduleHandle = LoadLibrary(L"uiautomationcore.dll"))
+        {
+            UiaHasServerSideProvider_I = PhGetProcedureAddress(moduleHandle, "UiaHasServerSideProvider", 0);
+        }
+
+        PhEndInitOnce(&initOnce);
+    }
+
+    if (!UiaHasServerSideProvider_I)
+        return FALSE;
+
+    return !!UiaHasServerSideProvider_I(WindowHandle);
+}
+
+VOID WepRefreshAutomationProvider(
+    _In_ PWINDOW_PROPERTIES_CONTEXT Context
+    )
+{
+    if (WepWindowHasAutomationProvider(Context->WindowHandle))
+        PhSetListViewSubItem(Context->ListViewHandle, WINDOW_PROPERTIES_INDEX_AUTOMATION, 1, L"Yes");
+    else
+        PhSetListViewSubItem(Context->ListViewHandle, WINDOW_PROPERTIES_INDEX_AUTOMATION, 1, L"No");
+}
+
 VOID WepGeneralAddListViewItemGroups(
     _In_ HWND ListViewHandle
     )
@@ -788,6 +847,7 @@ VOID WepGeneralAddListViewItemGroups(
     PhAddListViewGroup(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, L"General");
     PhAddListViewGroup(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_CLASS, L"Class");
 
+    PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_APPID, L"AppId", NULL);
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_TEXT, L"Text", NULL);
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_THREAD, L"Thread", NULL);
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_RECT, L"Rectangle", NULL);
@@ -797,11 +857,15 @@ VOID WepGeneralAddListViewItemGroups(
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_MENUHANDLE, L"Menu handle", NULL);
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_USERDATA, L"User data", NULL);
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_UNICODE, L"Unicode", NULL);
+    PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_WNDEXTRA, L"Window extra bytes", NULL);
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_WNDPROC, L"Window procedure", NULL);
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_DLGPROC, L"Dialog procedure", NULL);
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_DLGCTLID, L"Dialog control ID", NULL);
+    PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_FONTNAME, L"Font", NULL);
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_STYLES, L"Styles", NULL);
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_EXSTYLES, L"Extended styles", NULL);
+    PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_GENERAL, WINDOW_PROPERTIES_INDEX_AUTOMATION, L"Automation server", NULL);
+
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_CLASS, WINDOW_PROPERTIES_INDEX_CLASS_NAME, L"Name", NULL);
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_CLASS, WINDOW_PROPERTIES_INDEX_CLASS_ATOM, L"Atom", NULL);
     PhAddListViewGroupItem(ListViewHandle, WINDOW_PROPERTIES_CATEGORY_CLASS, WINDOW_PROPERTIES_INDEX_CLASS_STYLES, L"Styles", NULL);
@@ -837,26 +901,27 @@ INT_PTR CALLBACK WepWindowGeneralDlgProc(
     {
     case WM_INITDIALOG:
         {
-            HWND listViewHandle = GetDlgItem(hwndDlg, IDC_WINDOWINFO);
+            context->ListViewHandle = GetDlgItem(hwndDlg, IDC_WINDOWINFO);
 
             // HACK
             SendMessage(GetParent(hwndDlg), WM_SETICON, ICON_SMALL, (LPARAM)PH_LOAD_SHARED_ICON_SMALL(WE_PhInstanceHandle, MAKEINTRESOURCE(PHAPP_IDI_PROCESSHACKER)));
             SendMessage(GetParent(hwndDlg), WM_SETICON, ICON_BIG, (LPARAM)PH_LOAD_SHARED_ICON_LARGE(WE_PhInstanceHandle, MAKEINTRESOURCE(PHAPP_IDI_PROCESSHACKER)));
-            
+
             if (PhGetIntegerPairSetting(SETTING_NAME_WINDOWS_PROPERTY_POSITION).X == 0) // HACK
                 PhCenterWindow(GetParent(hwndDlg), context->ParentWindowHandle);
 
-            PhSetListViewStyle(listViewHandle, FALSE, TRUE);
-            PhSetControlTheme(listViewHandle, L"explorer");
-            PhAddListViewColumn(listViewHandle, 0, 0, 0, LVCFMT_LEFT, 180, L"Name");
-            PhAddListViewColumn(listViewHandle, 1, 1, 1, LVCFMT_LEFT, 200, L"Value");
-            PhSetExtendedListView(listViewHandle);
-            PhLoadListViewColumnsFromSetting(SETTING_NAME_WINDOWS_PROPERTY_COLUMNS, listViewHandle);
+            PhSetListViewStyle(context->ListViewHandle, FALSE, TRUE);
+            PhSetControlTheme(context->ListViewHandle, L"explorer");
+            PhAddListViewColumn(context->ListViewHandle, 0, 0, 0, LVCFMT_LEFT, 180, L"Name");
+            PhAddListViewColumn(context->ListViewHandle, 1, 1, 1, LVCFMT_LEFT, 200, L"Value");
+            PhSetExtendedListView(context->ListViewHandle);
+            PhLoadListViewColumnsFromSetting(SETTING_NAME_WINDOWS_PROPERTY_COLUMNS, context->ListViewHandle);
 
-            WepGeneralAddListViewItemGroups(listViewHandle);
-            WepRefreshWindowGeneralInfo(hwndDlg, listViewHandle, context);
-            WepRefreshWindowStyles(listViewHandle, context);
-            WepRefreshWindowClassInfo(hwndDlg, listViewHandle, context);
+            WepGeneralAddListViewItemGroups(context->ListViewHandle);
+            WepRefreshWindowGeneralInfo(hwndDlg, context->ListViewHandle, context);
+            WepRefreshWindowStyles(context->ListViewHandle, context);
+            WepRefreshWindowClassInfo(hwndDlg, context->ListViewHandle, context);
+            WepRefreshAutomationProvider(context);
 
             if (!!PhGetIntegerSetting(L"EnableThemeSupport")) // TODO: Required for compat (dmex)
                 PhInitializeWindowTheme(GetParent(hwndDlg), !!PhGetIntegerSetting(L"EnableThemeSupport"));
@@ -866,7 +931,7 @@ INT_PTR CALLBACK WepWindowGeneralDlgProc(
         break;
     case WM_DESTROY:
         {
-            PhSaveListViewColumnsToSetting(SETTING_NAME_WINDOWS_PROPERTY_COLUMNS, GetDlgItem(hwndDlg, IDC_WINDOWINFO));
+            PhSaveListViewColumnsToSetting(SETTING_NAME_WINDOWS_PROPERTY_COLUMNS, context->ListViewHandle);
         }
         break;
     case WM_SHOWWINDOW:
@@ -876,10 +941,71 @@ INT_PTR CALLBACK WepWindowGeneralDlgProc(
                 PPH_LAYOUT_ITEM dialogItem;
 
                 dialogItem = PvAddPropPageLayoutItem(hwndDlg, hwndDlg, PH_PROP_PAGE_TAB_CONTROL_PARENT, PH_ANCHOR_ALL);
-                PvAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_WINDOWINFO), dialogItem, PH_ANCHOR_ALL);
+                PvAddPropPageLayoutItem(hwndDlg, context->ListViewHandle, dialogItem, PH_ANCHOR_ALL);
                 PvDoPropPageLayout(hwndDlg);
 
                 propPageContext->LayoutInitialized = TRUE;
+            }
+        }
+        break;
+    case WM_NOTIFY:
+        {
+            PhHandleListViewNotifyBehaviors(lParam, context->ListViewHandle, PH_LIST_VIEW_DEFAULT_1_BEHAVIORS);
+        }
+        break;
+    case WM_CONTEXTMENU:
+        {
+            if ((HWND)wParam == context->ListViewHandle)
+            {
+                POINT point;
+                PPH_EMENU menu;
+                PPH_EMENU item;
+                PVOID *listviewItems;
+                ULONG numberOfItems;
+
+                point.x = GET_X_LPARAM(lParam);
+                point.y = GET_Y_LPARAM(lParam);
+
+                if (point.x == -1 && point.y == -1)
+                    PhGetListViewContextMenuPoint((HWND)wParam, &point);
+
+                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
+
+                if (numberOfItems != 0)
+                {
+                    menu = PhCreateEMenu();
+
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, PHAPP_IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
+                    PhInsertCopyListViewEMenuItem(menu, PHAPP_IDC_COPY, context->ListViewHandle);
+
+                    item = PhShowEMenu(
+                        menu,
+                        hwndDlg,
+                        PH_EMENU_SHOW_SEND_COMMAND | PH_EMENU_SHOW_LEFTRIGHT,
+                        PH_ALIGN_LEFT | PH_ALIGN_TOP,
+                        point.x,
+                        point.y
+                        );
+
+                    if (item)
+                    {
+                        if (!PhHandleCopyListViewEMenuItem(item))
+                        {
+                            switch (item->Id)
+                            {
+                            case PHAPP_IDC_COPY:
+                                {
+                                    PhCopyListView(context->ListViewHandle);
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    PhDestroyEMenu(menu);
+                }
+
+                PhFree(listviewItems);
             }
         }
         break;
@@ -930,8 +1056,8 @@ INT_PTR CALLBACK WepWindowGeneralDlgProc(
                 context->ClassWndProcResolving--;
             }
 
-            WepRefreshWindowGeneralInfoSymbols(GetDlgItem(hwndDlg, IDC_WINDOWINFO), context);
-            WepRefreshWindowClassInfoSymbols(GetDlgItem(hwndDlg, IDC_WINDOWINFO), context);
+            WepRefreshWindowGeneralInfoSymbols(context->ListViewHandle, context);
+            WepRefreshWindowClassInfoSymbols(context->ListViewHandle, context);
         }
         break;
     }
@@ -941,24 +1067,26 @@ INT_PTR CALLBACK WepWindowGeneralDlgProc(
 
 BOOL CALLBACK EnumPropsExCallback(
     _In_ HWND hwnd,
-    _In_ LPTSTR lpszString,
+    _In_ PWSTR lpszString,
     _In_ HANDLE hData,
     _In_ ULONG_PTR dwData
     )
 {
     INT lvItemIndex;
-    PWSTR propName;
     WCHAR value[PH_PTR_STR_LEN_1];
 
-    propName = lpszString;
-
-    if ((ULONG_PTR)lpszString < USHRT_MAX)
+    if ((ULONG_PTR)lpszString < USHRT_MAX) // This is an integer atom.
     {
-        // This is an integer atom.
-        propName = PhaFormatString(L"#%lu", (ULONG_PTR)lpszString)->Buffer;
-    }
+        PPH_STRING propName;
 
-    lvItemIndex = PhAddListViewItem((HWND)dwData, MAXINT, propName, NULL);
+        propName = PhFormatString(L"#%hu", (USHORT)lpszString);
+        lvItemIndex = PhAddListViewItem((HWND)dwData, MAXINT, propName->Buffer, NULL);
+        PhDereferenceObject(propName);
+    }
+    else
+    {
+        lvItemIndex = PhAddListViewItem((HWND)dwData, MAXINT, lpszString, NULL);
+    }
 
     PhPrintPointer(value, (PVOID)hData);
     PhSetListViewSubItem((HWND)dwData, lvItemIndex, 1, value);
@@ -974,7 +1102,9 @@ VOID WepRefreshWindowProps(
 {
     ExtendedListView_SetRedraw(ListViewHandle, FALSE);
     ListView_DeleteAllItems(ListViewHandle);
+
     EnumPropsEx(Context->WindowHandle, EnumPropsExCallback, (LPARAM)ListViewHandle);
+
     ExtendedListView_SortItems(ListViewHandle);
     ExtendedListView_SetRedraw(ListViewHandle, TRUE);
 }
@@ -1044,6 +1174,69 @@ INT_PTR CALLBACK WepWindowPropertiesDlgProc(
                 PvDoPropPageLayout(hwndDlg);
 
                 propPageContext->LayoutInitialized = TRUE;
+            }
+        }
+        break;
+    case WM_NOTIFY:
+        {
+            PhHandleListViewNotifyBehaviors(lParam, GetDlgItem(hwndDlg, IDC_LIST), PH_LIST_VIEW_DEFAULT_1_BEHAVIORS);
+        }
+        break;
+    case WM_CONTEXTMENU:
+        {
+            HWND listViewHandle = GetDlgItem(hwndDlg, IDC_LIST);
+
+            if ((HWND)wParam == listViewHandle)
+            {
+                POINT point;
+                PPH_EMENU menu;
+                PPH_EMENU item;
+                PVOID *listviewItems;
+                ULONG numberOfItems;
+
+                point.x = GET_X_LPARAM(lParam);
+                point.y = GET_Y_LPARAM(lParam);
+
+                if (point.x == -1 && point.y == -1)
+                    PhGetListViewContextMenuPoint((HWND)wParam, &point);
+
+                PhGetSelectedListViewItemParams(listViewHandle, &listviewItems, &numberOfItems);
+
+                if (numberOfItems != 0)
+                {
+                    menu = PhCreateEMenu();
+
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, PHAPP_IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
+                    PhInsertCopyListViewEMenuItem(menu, PHAPP_IDC_COPY, listViewHandle);
+
+                    item = PhShowEMenu(
+                        menu,
+                        hwndDlg,
+                        PH_EMENU_SHOW_SEND_COMMAND | PH_EMENU_SHOW_LEFTRIGHT,
+                        PH_ALIGN_LEFT | PH_ALIGN_TOP,
+                        point.x,
+                        point.y
+                        );
+
+                    if (item)
+                    {
+                        if (!PhHandleCopyListViewEMenuItem(item))
+                        {
+                            switch (item->Id)
+                            {
+                            case PHAPP_IDC_COPY:
+                                {
+                                    PhCopyListView(listViewHandle);
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    PhDestroyEMenu(menu);
+                }
+
+                PhFree(listviewItems);
             }
         }
         break;
@@ -1176,6 +1369,69 @@ INT_PTR CALLBACK WepWindowPropStoreDlgProc(
                 PvDoPropPageLayout(hwndDlg);
 
                 propPageContext->LayoutInitialized = TRUE;
+            }
+        }
+        break;
+    case WM_NOTIFY:
+        {
+            PhHandleListViewNotifyBehaviors(lParam, GetDlgItem(hwndDlg, IDC_LIST), PH_LIST_VIEW_DEFAULT_1_BEHAVIORS);
+        }
+        break;
+    case WM_CONTEXTMENU:
+        {
+            HWND listViewHandle = GetDlgItem(hwndDlg, IDC_LIST);
+
+            if ((HWND)wParam == listViewHandle)
+            {
+                POINT point;
+                PPH_EMENU menu;
+                PPH_EMENU item;
+                PVOID *listviewItems;
+                ULONG numberOfItems;
+
+                point.x = GET_X_LPARAM(lParam);
+                point.y = GET_Y_LPARAM(lParam);
+
+                if (point.x == -1 && point.y == -1)
+                    PhGetListViewContextMenuPoint((HWND)wParam, &point);
+
+                PhGetSelectedListViewItemParams(listViewHandle, &listviewItems, &numberOfItems);
+
+                if (numberOfItems != 0)
+                {
+                    menu = PhCreateEMenu();
+
+                    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, PHAPP_IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
+                    PhInsertCopyListViewEMenuItem(menu, PHAPP_IDC_COPY, listViewHandle);
+
+                    item = PhShowEMenu(
+                        menu,
+                        hwndDlg,
+                        PH_EMENU_SHOW_SEND_COMMAND | PH_EMENU_SHOW_LEFTRIGHT,
+                        PH_ALIGN_LEFT | PH_ALIGN_TOP,
+                        point.x,
+                        point.y
+                        );
+
+                    if (item)
+                    {
+                        if (!PhHandleCopyListViewEMenuItem(item))
+                        {
+                            switch (item->Id)
+                            {
+                            case PHAPP_IDC_COPY:
+                                {
+                                    PhCopyListView(listViewHandle);
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    PhDestroyEMenu(menu);
+                }
+
+                PhFree(listviewItems);
             }
         }
         break;

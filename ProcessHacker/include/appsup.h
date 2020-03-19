@@ -91,6 +91,7 @@ typedef union _PH_KNOWN_PROCESS_COMMAND_LINE
 } PH_KNOWN_PROCESS_COMMAND_LINE, *PPH_KNOWN_PROCESS_COMMAND_LINE;
 
 PHAPPAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhaGetProcessKnownCommandLine(
@@ -164,19 +165,20 @@ PhHandleListViewNotifyForCopy(
     _In_ LPARAM lParam,
     _In_ HWND ListViewHandle
     );
-// end_phapppub
 
 #define PH_LIST_VIEW_CTRL_C_BEHAVIOR 0x1
 #define PH_LIST_VIEW_CTRL_A_BEHAVIOR 0x2
 #define PH_LIST_VIEW_DEFAULT_1_BEHAVIORS (PH_LIST_VIEW_CTRL_C_BEHAVIOR | PH_LIST_VIEW_CTRL_A_BEHAVIOR)
 
-VOID PhHandleListViewNotifyBehaviors(
+PHAPPAPI
+VOID
+NTAPI
+PhHandleListViewNotifyBehaviors(
     _In_ LPARAM lParam,
     _In_ HWND ListViewHandle,
     _In_ ULONG Behaviors
     );
 
-// begin_phapppub
 PHAPPAPI
 BOOLEAN
 NTAPI
@@ -210,6 +212,13 @@ PhGetPhVersionNumbers(
     _Out_opt_ PULONG MinorVersion,
     _Out_opt_ PULONG BuildNumber,
     _Out_opt_ PULONG RevisionNumber
+    );
+
+PHAPPAPI
+PPH_STRING
+NTAPI
+PhGetPhVersionHash(
+    VOID
     );
 
 PHAPPAPI
@@ -391,6 +400,31 @@ NTAPI
 PhHandleCopyCellEMenuItem(
     _In_ struct _PH_EMENU_ITEM *SelectedItem
     );
+
+typedef struct _PH_COPY_ITEM_CONTEXT
+{
+    HWND ListViewHandle;
+    ULONG Id;
+    ULONG SubId;
+    PPH_STRING MenuItemText;
+} PH_COPY_ITEM_CONTEXT, *PPH_COPY_ITEM_CONTEXT;
+
+PHAPPAPI
+BOOLEAN
+NTAPI
+PhInsertCopyListViewEMenuItem(
+    _In_ struct _PH_EMENU_ITEM *Menu,
+    _In_ ULONG InsertAfterId,
+    _In_ HWND ListViewHandle
+    );
+
+PHAPPAPI
+BOOLEAN
+NTAPI
+PhHandleCopyListViewEMenuItem(
+    _In_ struct _PH_EMENU_ITEM *SelectedItem
+    );
+
 // end_phapppub
 
 BOOLEAN PhShellOpenKey2(
@@ -404,6 +438,19 @@ PPH_STRING PhPcre2GetErrorMessage(
 
 HBITMAP PhGetShieldBitmap(
     VOID
+    );
+
+HRESULT PhRunAsAdminTask(
+    _In_ PWSTR TaskName
+    );
+
+HRESULT PhDeleteAdminTask(
+    _In_ PWSTR TaskName
+    );
+
+HRESULT PhCreateAdminTask(
+    _In_ PWSTR TaskName,
+    _In_ PWSTR FileName
     );
 
 #define PH_LOAD_SHARED_ICON_SMALL(BaseAddress, Name) PhLoadIcon(BaseAddress, (Name), PH_LOAD_ICON_SHARED | PH_LOAD_ICON_SIZE_SMALL, 0, 0) // phapppub

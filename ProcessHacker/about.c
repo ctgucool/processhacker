@@ -3,7 +3,7 @@
  *   about dialog
  *
  * Copyright (C) 2010-2016 wj32
- * Copyright (C) 2017-2018 dmex
+ * Copyright (C) 2017-2020 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -55,11 +55,11 @@ static INT_PTR CALLBACK PhpAboutDlgProc(
             SendMessage(hwndDlg, WM_SETICON, ICON_SMALL, (LPARAM)PH_LOAD_SHARED_ICON_SMALL(PhInstanceHandle, MAKEINTRESOURCE(IDI_PROCESSHACKER)));
             SendMessage(hwndDlg, WM_SETICON, ICON_BIG, (LPARAM)PH_LOAD_SHARED_ICON_LARGE(PhInstanceHandle, MAKEINTRESOURCE(IDI_PROCESSHACKER)));
 
-            PhCenterWindow(hwndDlg, (IsWindowVisible(PhMainWndHandle) && !IsMinimized(PhMainWndHandle)) ? PhMainWndHandle : NULL);
+            PhCenterWindow(hwndDlg, PhMainWndHandle);
 
 #if (PHAPP_VERSION_REVISION != 0)
             appName = PhFormatString(
-                L"Process Hacker %u.%u.%u (%hs)",
+                L"Process Hacker %lu.%lu.%lu (%hs)",
                 PHAPP_VERSION_MAJOR,
                 PHAPP_VERSION_MINOR,
                 PHAPP_VERSION_REVISION,
@@ -67,7 +67,7 @@ static INT_PTR CALLBACK PhpAboutDlgProc(
                 );
 #else
             appName = PhFormatString(
-                L"Process Hacker %u.%u",
+                L"Process Hacker %lu.%lu",
                 PHAPP_VERSION_MAJOR,
                 PHAPP_VERSION_MINOR
                 );
@@ -161,7 +161,7 @@ VOID PhShowAboutDialog(
         ShowWindow(PhAboutWindowHandle, SW_SHOW);
     }
 
-    if (IsIconic(PhAboutWindowHandle))
+    if (IsMinimized(PhAboutWindowHandle))
         ShowWindow(PhAboutWindowHandle, SW_RESTORE);
     else
         SetForegroundWindow(PhAboutWindowHandle);
@@ -179,6 +179,23 @@ FORCEINLINE ULONG PhpGetObjectTypeObjectCount(
     return info.NumberOfObjects;
 }
 
+PPH_STRING PhpGetBuildTimeDiagnostics(
+    VOID
+    )
+{
+    LARGE_INTEGER time;
+    SYSTEMTIME systemTime = { 0 };
+    PIMAGE_DOS_HEADER imageDosHeader;
+    PIMAGE_NT_HEADERS imageNtHeader;
+
+    imageDosHeader = (PIMAGE_DOS_HEADER)PhInstanceHandle; // HACK
+    imageNtHeader = (PIMAGE_NT_HEADERS)PTR_ADD_OFFSET(imageDosHeader, imageDosHeader->e_lfanew);
+    RtlSecondsSince1970ToTime(imageNtHeader->FileHeader.TimeDateStamp, &time);
+    PhLargeIntegerToLocalSystemTime(&systemTime, &time);
+
+    return PhaFormatDateTime(&systemTime);
+}
+
 PPH_STRING PhGetDiagnosticsString(
     VOID
     )
@@ -187,10 +204,28 @@ PPH_STRING PhGetDiagnosticsString(
 
     PhInitializeStringBuilder(&stringBuilder, 50);
 
+#if (PHAPP_VERSION_REVISION != 0)
+    PhAppendFormatStringBuilder(&stringBuilder,
+        L"Process Hacker\r\nVersion: %lu.%lu.%lu (%hs)\r\n",
+        PHAPP_VERSION_MAJOR,
+        PHAPP_VERSION_MINOR,
+        PHAPP_VERSION_REVISION,
+        PHAPP_VERSION_COMMIT
+        );
+    PhAppendFormatStringBuilder(&stringBuilder, L"Compiled: %s\r\n\r\n", PhpGetBuildTimeDiagnostics()->Buffer);
+#else
+    PhAppendFormatStringBuilder(&stringBuilder,
+        L"Process Hacker\r\nVersion: %lu.%lu\r\n",
+        PHAPP_VERSION_MAJOR,
+        PHAPP_VERSION_MINOR
+        );
+    PhAppendFormatStringBuilder(&stringBuilder, L"Compiled: %s\r\n\r\n", PhpGetBuildTimeDiagnostics()->Buffer);
+#endif
+
     PhAppendFormatStringBuilder(&stringBuilder, L"OBJECT INFORMATION\r\n");
 
 #define OBJECT_TYPE_COUNT(Type) PhAppendFormatStringBuilder(&stringBuilder, \
-    L#Type L": %u objects\r\n", PhpGetObjectTypeObjectCount(Type))
+    L#Type L": %lu objects\r\n", PhpGetObjectTypeObjectCount(Type))
 
     // ref
     OBJECT_TYPE_COUNT(PhObjectTypeObject);

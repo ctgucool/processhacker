@@ -57,80 +57,6 @@ PhCreateThread2(
     _In_opt_ PVOID Parameter
     );
 
-// DLLs
-
-FORCEINLINE
-PVOID
-PhGetDllHandle(
-    _In_ PWSTR DllName
-    )
-{
-    UNICODE_STRING dllName;
-    PVOID dllHandle;
-
-    RtlInitUnicodeString(&dllName, DllName);
-
-    if (NT_SUCCESS(LdrGetDllHandle(NULL, NULL, &dllName, &dllHandle)))
-        return dllHandle;
-    else
-        return NULL;
-}
-
-FORCEINLINE
-PVOID
-PhGetProcedureAddress(
-    _In_ PVOID DllHandle,
-    _In_opt_ PSTR ProcedureName,
-    _In_opt_ ULONG ProcedureNumber
-    )
-{
-    NTSTATUS status;
-    ANSI_STRING procedureName;
-    PVOID procedureAddress;
-
-    if (ProcedureName)
-    {
-        RtlInitAnsiString(&procedureName, ProcedureName);
-        status = LdrGetProcedureAddress(
-            DllHandle,
-            &procedureName,
-            0,
-            &procedureAddress
-            );
-    }
-    else
-    {
-        status = LdrGetProcedureAddress(
-            DllHandle,
-            NULL,
-            ProcedureNumber,
-            &procedureAddress
-            );
-    }
-
-    if (!NT_SUCCESS(status))
-        return NULL;
-
-    return procedureAddress;
-}
-
-FORCEINLINE
-PVOID
-PhGetModuleProcAddress(
-    _In_ PWSTR ModuleName,
-    _In_ PSTR ProcName
-    )
-{
-    PVOID module;
-
-    module = PhGetDllHandle(ModuleName);
-
-    if (module)
-        return PhGetProcedureAddress(module, ProcName, 0);
-    else
-        return NULL;
-}
-
 // Misc. system
 
 PHLIBAPI
@@ -239,6 +165,7 @@ PhReAllocateSafe(
 
 _Check_return_
 _Ret_maybenull_
+_Success_(return != NULL)
 PHLIBAPI
 PVOID
 NTAPI
@@ -251,7 +178,7 @@ PHLIBAPI
 VOID
 NTAPI
 PhFreePage(
-    _Frees_ptr_opt_ PVOID Memory
+    _Post_invalid_ PVOID Memory
     );
 
 FORCEINLINE
@@ -648,6 +575,7 @@ PhDuplicateStringZ(
     );
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhCopyBytesZ(
@@ -659,6 +587,7 @@ PhCopyBytesZ(
     );
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhCopyStringZ(
@@ -670,6 +599,7 @@ PhCopyStringZ(
     );
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhCopyStringZFromBytes(
@@ -681,6 +611,7 @@ PhCopyStringZFromBytes(
     );
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhCopyStringZFromMultiByte(
@@ -816,8 +747,8 @@ typedef struct _PH_RELATIVE_BYTESREF
     ULONG Offset;
 } PH_RELATIVE_BYTESREF, *PPH_RELATIVE_BYTESREF, PH_RELATIVE_STRINGREF, *PPH_RELATIVE_STRINGREF;
 
-#define PH_STRINGREF_INIT(String) { sizeof(String) - sizeof(WCHAR), (String) }
-#define PH_BYTESREF_INIT(String) { sizeof(String) - sizeof(CHAR), (String) }
+#define PH_STRINGREF_INIT(String) { sizeof(String) - sizeof(UNICODE_NULL), (String) }
+#define PH_BYTESREF_INIT(String) { sizeof(String) - sizeof(ANSI_NULL), (String) }
 
 FORCEINLINE
 VOID
@@ -1897,6 +1828,7 @@ PhWriteUnicodeDecoder(
     );
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhDecodeUnicodeDecoder(
@@ -1905,6 +1837,7 @@ PhDecodeUnicodeDecoder(
     );
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhEncodeUnicode(
@@ -2000,8 +1933,10 @@ PhConvertUtf16ToMultiByteEx(
     );
 
 // UTF-8 to UTF-16
+// In-place: RtlUTF8ToUnicodeN
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhConvertUtf8ToUtf16Size(
@@ -2011,6 +1946,7 @@ PhConvertUtf8ToUtf16Size(
     );
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhConvertUtf8ToUtf16Buffer(
@@ -2037,8 +1973,10 @@ PhConvertUtf8ToUtf16Ex(
     );
 
 // UTF-16 to UTF-8
+// In-place: RtlUnicodeToUTF8N
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhConvertUtf16ToUtf8Size(
@@ -2048,6 +1986,7 @@ PhConvertUtf16ToUtf8Size(
     );
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhConvertUtf16ToUtf8Buffer(
@@ -2556,6 +2495,7 @@ PhAddItemPointerList(
     );
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhEnumPointerListEx(
@@ -2581,6 +2521,7 @@ PhRemoveItemPointerList(
     _In_ HANDLE PointerHandle
     );
 
+_Success_(return != FALSE)
 FORCEINLINE
 BOOLEAN
 PhEnumPointerList(
@@ -2972,6 +2913,7 @@ PhClearHashtable(
     );
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhEnumHashtable(
@@ -3030,7 +2972,7 @@ PhNextEnumHashtable(
         entry = (PPH_HASHTABLE_ENTRY)Context->Current;
         Context->Current += Context->Step;
 
-        if (entry->HashCode != -1)
+        if (entry->HashCode != ULONG_MAX)
             return &entry->Body;
     }
 
@@ -3371,6 +3313,7 @@ PhBufferToHexStringEx(
     );
 
 PHLIBAPI
+_Success_(return)
 BOOLEAN
 NTAPI
 PhStringToInteger64(
@@ -3509,6 +3452,21 @@ PhaLowerString(
 
     newString = PhaDuplicateString(String);
     _wcslwr(newString->Buffer);
+
+    return newString;
+}
+
+FORCEINLINE
+PPH_STRING
+NTAPI
+PhUpperString(
+    _In_ PPH_STRING String
+    )
+{
+    PPH_STRING newString;
+
+    newString = PhDuplicateString(String);
+    _wcsupr(newString->Buffer);
 
     return newString;
 }

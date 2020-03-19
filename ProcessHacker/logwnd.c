@@ -58,7 +58,7 @@ VOID PhShowLogDialog(
         ShowWindow(PhLogWindowHandle, SW_SHOW);
     }
 
-    if (IsIconic(PhLogWindowHandle))
+    if (IsMinimized(PhLogWindowHandle))
         ShowWindow(PhLogWindowHandle, SW_RESTORE);
     else
         SetForegroundWindow(PhLogWindowHandle);
@@ -179,7 +179,10 @@ INT_PTR CALLBACK PhpLogDlgProc(
             MinimumSize.bottom = 150;
             MapDialogRect(hwndDlg, &MinimumSize);
 
-            PhLoadWindowPlacementFromSetting(L"LogWindowPosition", L"LogWindowSize", hwndDlg);
+            if (PhGetIntegerPairSetting(L"LogWindowPosition").X)
+                PhLoadWindowPlacementFromSetting(L"LogWindowPosition", L"LogWindowSize", hwndDlg);
+            else
+                PhCenterWindow(hwndDlg, PhMainWndHandle);
 
             Button_SetCheck(GetDlgItem(hwndDlg, IDC_AUTOSCROLL), BST_CHECKED);
 

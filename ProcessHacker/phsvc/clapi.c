@@ -81,6 +81,7 @@ NTSTATUS PhSvcConnectToServer(
     securityQos.EffectiveOnly = TRUE;
 
     connectInfoLength = sizeof(PHSVC_API_CONNECTINFO);
+    connectInfo.ServerProcessId = ULONG_MAX;
 
     status = NtConnectPort(
         &PhSvcClPortHandle,
@@ -115,6 +116,13 @@ NTSTATUS PhSvcConnectToServer(
         NtClose(PhSvcClPortHandle);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
+
+    RtlSetHeapInformation(
+        PhSvcClPortHeap,
+        HeapCompatibilityInformation,
+        &(ULONG){ HEAP_COMPATIBILITY_LFH },
+        sizeof(ULONG)
+        );
 
     return status;
 }
@@ -153,7 +161,7 @@ PVOID PhSvcpAllocateHeap(
     if (!memory)
         return NULL;
 
-    *Offset = (ULONG)((ULONG_PTR)memory - (ULONG_PTR)PhSvcClPortHeap);
+    *Offset = PtrToUlong(PTR_SUB_OFFSET(memory, PhSvcClPortHeap));
 
     return memory;
 }

@@ -55,7 +55,7 @@ typedef ULONG GDI_HANDLE_BUFFER[GDI_HANDLE_BUFFER_SIZE];
 typedef ULONG GDI_HANDLE_BUFFER32[GDI_HANDLE_BUFFER_SIZE32];
 typedef ULONG GDI_HANDLE_BUFFER64[GDI_HANDLE_BUFFER_SIZE64];
 
-#define FLS_MAXIMUM_AVAILABLE 128
+//#define FLS_MAXIMUM_AVAILABLE 128
 #define TLS_MINIMUM_AVAILABLE 64
 #define TLS_EXPANSION_SLOTS 1024
 
@@ -91,8 +91,6 @@ typedef struct _WOW64_PROCESS
 } WOW64_PROCESS, *PWOW64_PROCESS;
 
 #include <ntpebteb.h>
-
-// source:http://www.microsoft.com/whdc/system/Sysinternals/MoreThan64proc.mspx
 
 #if (PHNT_MODE != PHNT_MODE_KERNEL)
 typedef enum _PROCESSINFOCLASS
@@ -151,11 +149,11 @@ typedef enum _PROCESSINFOCLASS
     ProcessHandleInformation, // q: PROCESS_HANDLE_SNAPSHOT_INFORMATION // since WIN8
     ProcessMitigationPolicy, // s: PROCESS_MITIGATION_POLICY_INFORMATION
     ProcessDynamicFunctionTableInformation,
-    ProcessHandleCheckingMode,
+    ProcessHandleCheckingMode, // qs: ULONG; s: 0 disables, otherwise enables
     ProcessKeepAliveCount, // q: PROCESS_KEEPALIVE_COUNT_INFORMATION
     ProcessRevokeFileHandles, // s: PROCESS_REVOKE_FILE_HANDLES_INFORMATION
     ProcessWorkingSetControl, // s: PROCESS_WORKING_SET_CONTROL
-    ProcessHandleTable, // since WINBLUE
+    ProcessHandleTable, // q: ULONG[] // since WINBLUE
     ProcessCheckStackExtentsMode,
     ProcessCommandLineInformation, // q: UNICODE_STRING // 60
     ProcessProtectionInformation, // q: PS_PROTECTION
@@ -168,7 +166,7 @@ typedef enum _PROCESSINFOCLASS
     ProcessSubsystemProcess,
     ProcessJobMemoryInformation, // PROCESS_JOB_MEMORY_INFO
     ProcessInPrivate, // since THRESHOLD2 // 70
-    ProcessRaiseUMExceptionOnInvalidHandleClose,
+    ProcessRaiseUMExceptionOnInvalidHandleClose, // qs: ULONG; s: 0 disables, otherwise enables
     ProcessIumChallengeResponse,
     ProcessChildProcessInformation, // PROCESS_CHILD_PROCESS_INFORMATION
     ProcessHighGraphicsPriorityInformation,
@@ -186,7 +184,7 @@ typedef enum _PROCESSINFOCLASS
     ProcessEnclaveInformation,
     ProcessEnableReadWriteVmLogging, // PROCESS_READWRITEVM_LOGGING_INFORMATION
     ProcessUptimeInformation, // PROCESS_UPTIME_INFORMATION
-    ProcessImageSection,
+    ProcessImageSection, // q: HANDLE
     ProcessDebugAuthInformation, // since REDSTONE4 // 90
     ProcessSystemResourceManagement, // PROCESS_SYSTEM_RESOURCE_MANAGEMENT
     ProcessSequenceNumber, // q: ULONGLONG
@@ -195,6 +193,8 @@ typedef enum _PROCESSINFOCLASS
     ProcessCombineSecurityDomainsInformation, // PROCESS_COMBINE_SECURITY_DOMAINS_INFORMATION
     ProcessEnableLogging, // PROCESS_LOGGING_INFORMATION
     ProcessLeapSecondInformation, // PROCESS_LEAP_SECOND_INFORMATION
+    ProcessFiberShadowStackAllocation, // PROCESS_FIBER_SHADOW_STACK_ALLOCATION_INFORMATION // since 19H1
+    ProcessFreeFiberShadowStackAllocation, // PROCESS_FREE_FIBER_SHADOW_STACK_ALLOCATION_INFORMATION
     MaxProcessInfoClass
 } PROCESSINFOCLASS;
 #endif
@@ -245,7 +245,7 @@ typedef enum _THREADINFOCLASS
     ThreadSystemThreadInformation, // q: SYSTEM_THREAD_INFORMATION // 40
     ThreadActualGroupAffinity, // since THRESHOLD2
     ThreadDynamicCodePolicyInfo,
-    ThreadExplicitCaseSensitivity,
+    ThreadExplicitCaseSensitivity, // qs: ULONG; s: 0 disables, otherwise enables
     ThreadWorkOnBehalfTicket,
     ThreadSubsystemInformation, // q: SUBSYSTEM_INFORMATION_TYPE // since REDSTONE2
     ThreadDbgkWerReportActive,
@@ -646,6 +646,7 @@ typedef struct _PROCESS_MITIGATION_POLICY_INFORMATION
         PROCESS_MITIGATION_SYSTEM_CALL_FILTER_POLICY SystemCallFilterPolicy;
         PROCESS_MITIGATION_PAYLOAD_RESTRICTION_POLICY PayloadRestrictionPolicy;
         PROCESS_MITIGATION_CHILD_PROCESS_POLICY ChildProcessPolicy;
+        PROCESS_MITIGATION_SIDE_CHANNEL_ISOLATION_POLICY SideChannelIsolationPolicy;
     };
 } PROCESS_MITIGATION_POLICY_INFORMATION, *PPROCESS_MITIGATION_POLICY_INFORMATION;
 
@@ -811,6 +812,7 @@ typedef struct _MANAGE_WRITES_TO_EXECUTABLE_MEMORY
     ULONG ProcessEnableWriteExceptions : 1;
     ULONG ThreadAllowWrites : 1;
     ULONG Spare : 22;
+    PVOID KernelWriteToExecutableSignal; // 19H1
 } MANAGE_WRITES_TO_EXECUTABLE_MEMORY, *PMANAGE_WRITES_TO_EXECUTABLE_MEMORY;
 
 #define PROCESS_READWRITEVM_LOGGING_ENABLE_READVM 1
@@ -888,6 +890,22 @@ typedef struct _PROCESS_LEAP_SECOND_INFORMATION
     ULONG Flags;
     ULONG Reserved;
 } PROCESS_LEAP_SECOND_INFORMATION, *PPROCESS_LEAP_SECOND_INFORMATION;
+
+// private
+typedef struct _PROCESS_FIBER_SHADOW_STACK_ALLOCATION_INFORMATION
+{
+    ULONGLONG ReserveSize;
+    ULONGLONG CommitSize;
+    ULONG PreferredNode;
+    ULONG Reserved;
+    PVOID Ssp;
+} PROCESS_FIBER_SHADOW_STACK_ALLOCATION_INFORMATION, *PPROCESS_FIBER_SHADOW_STACK_ALLOCATION_INFORMATION;
+
+// private
+typedef struct _PROCESS_FREE_FIBER_SHADOW_STACK_ALLOCATION_INFORMATION
+{
+    PVOID Ssp;
+} PROCESS_FREE_FIBER_SHADOW_STACK_ALLOCATION_INFORMATION, *PPROCESS_FREE_FIBER_SHADOW_STACK_ALLOCATION_INFORMATION;
 
 // end_private
 
@@ -1015,9 +1033,16 @@ typedef struct _THREAD_UMS_INFORMATION
     THREAD_UMS_INFORMATION_COMMAND Command;
     PRTL_UMS_COMPLETION_LIST CompletionList;
     PRTL_UMS_CONTEXT UmsContext;
-    ULONG Flags;
-    ULONG IsUmsSchedulerThread;
-    ULONG IsUmsWorkerThread;
+    union
+    {
+        ULONG Flags;
+        struct
+        {
+            ULONG IsUmsSchedulerThread : 1;
+            ULONG IsUmsWorkerThread : 1;
+            ULONG SpareBits : 30;
+        };
+    };
 } THREAD_UMS_INFORMATION, *PTHREAD_UMS_INFORMATION;
 
 // private
@@ -1149,7 +1174,7 @@ NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtGetNextProcess(
-    _In_ HANDLE ProcessHandle,
+    _In_opt_ HANDLE ProcessHandle,
     _In_ ACCESS_MASK DesiredAccess,
     _In_ ULONG HandleAttributes,
     _In_ ULONG Flags,

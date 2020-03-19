@@ -3,7 +3,7 @@
  *   statusbar main
  *
  * Copyright (C) 2010-2013 wj32
- * Copyright (C) 2011-2018 dmex
+ * Copyright (C) 2011-2020 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -24,7 +24,6 @@
 #include "toolstatus.h"
 
 HWND StatusBarHandle = NULL;
-ULONG ProcessesUpdatedCount = 0;
 ULONG StatusBarMaxWidths[MAX_STATUSBAR_ITEMS];
 // Note: no lock is needed because we only ever modify the list on this same thread.
 PPH_LIST StatusBarItemList = NULL;
@@ -198,13 +197,15 @@ VOID StatusBarShowMenu(
     )
 {
     PPH_EMENU menu;
+    PPH_EMENU_ITEM menuItem;
     PPH_EMENU_ITEM selectedItem;
     POINT cursorPos;
 
     GetCursorPos(&cursorPos);
 
     menu = PhCreateEMenu();
-    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, COMMAND_ID_ENABLE_SEARCHBOX, L"Customize...", NULL, NULL), -1);
+    menuItem = PhCreateEMenuItem(0, COMMAND_ID_ENABLE_SEARCHBOX, L"Customize...", NULL, NULL);
+    PhInsertEMenuItem(menu, menuItem, ULONG_MAX);
 
     selectedItem = PhShowEMenu(
         menu,
@@ -215,7 +216,7 @@ VOID StatusBarShowMenu(
         cursorPos.y
         );
 
-    if (selectedItem && selectedItem->Id != -1)
+    if (selectedItem && selectedItem->Id != ULONG_MAX)
     {
         StatusBarShowCustomizeDialog();
 
@@ -230,7 +231,6 @@ VOID StatusBarUpdate(
     )
 {
     static ULONG64 lastTickCount = 0;
-
     ULONG count;
     ULONG i;
     HDC hdc;
@@ -238,7 +238,7 @@ VOID StatusBarUpdate(
     ULONG widths[MAX_STATUSBAR_ITEMS];
     WCHAR text[MAX_STATUSBAR_ITEMS][0x80];
 
-    if (ProcessesUpdatedCount < 2)
+    if (ProcessesUpdatedCount != 3)
         return;
 
     if (ResetMaxWidths)
@@ -254,7 +254,7 @@ VOID StatusBarUpdate(
     }
 
     hdc = GetDC(StatusBarHandle);
-    SelectObject(hdc, (HFONT)SendMessage(StatusBarHandle, WM_GETFONT, 0, 0));
+    SelectFont(hdc, GetWindowFont(StatusBarHandle));
 
     // Reset max. widths for Max. CPU Process and Max. I/O Process parts once in a while.
     {

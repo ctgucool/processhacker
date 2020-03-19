@@ -3,7 +3,7 @@
  *   plugin support
  *
  * Copyright (C) 2010-2015 wj32
- * Copyright (C) 2017-2018 dmex
+ * Copyright (C) 2017-2019 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -62,7 +62,6 @@ VOID PhpExecuteCallbackForAllPlugins(
 
 PH_AVL_TREE PhPluginsByName = PH_AVL_TREE_INIT(PhpPluginsCompareFunction);
 static PH_CALLBACK GeneralCallbacks[GeneralCallbackMaximum];
-static PPH_STRING PluginsDirectory;
 static ULONG NextPluginId = IDPLUGINS + 1;
 
 INT NTAPI PhpPluginsCompareFunction(
@@ -76,6 +75,7 @@ INT NTAPI PhpPluginsCompareFunction(
     return PhCompareStringRef(&plugin1->Name, &plugin2->Name, FALSE);
 }
 
+_Success_(return)
 BOOLEAN PhpLocateDisabledPlugin(
     _In_ PPH_STRING List,
     _In_ PPH_STRINGREF BaseName,
@@ -182,38 +182,106 @@ VOID PhSetPluginDisabled(
     PhDereferenceObject(disabled);
 }
 
+PPH_STRING PhpGetPluginDirectoryPath(
+    VOID
+    )
+{
+    static PPH_STRING cachedPluginDirectory = NULL;
+    PPH_STRING pluginsDirectory;
+    SIZE_T returnLength;
+    WCHAR pluginsDirectoryName[MAX_PATH];
+    PH_FORMAT format[3];
+
+    if (pluginsDirectory = InterlockedCompareExchangePointer(
+        &cachedPluginDirectory,
+        NULL,
+        NULL
+        ))
+    {
+        return PhReferenceObject(pluginsDirectory);
+    }
+
+    pluginsDirectory = PhGetStringSetting(L"PluginsDirectory");
+
+    if (RtlDetermineDosPathNameType_U(pluginsDirectory->Buffer) == RtlPathTypeRelative)
+    {
+        PPH_STRING applicationDirectory;
+
+        if (applicationDirectory = PhGetApplicationDirectory())
+        {
+            PH_STRINGREF pluginsDirectoryNameSr;
+
+            // Not absolute. Make sure it is.
+            PhInitFormatS(&format[0], applicationDirectory->Buffer);
+            PhInitFormatS(&format[1], pluginsDirectory->Buffer);
+            PhInitFormatS(&format[2], L"\\");
+
+            if (PhFormatToBuffer(
+                format,
+                RTL_NUMBER_OF(format),
+                pluginsDirectoryName,
+                sizeof(pluginsDirectoryName),
+                &returnLength
+                ))
+            {
+                pluginsDirectoryNameSr.Buffer = pluginsDirectoryName;
+                pluginsDirectoryNameSr.Length = returnLength - sizeof(UNICODE_NULL);
+
+                PhMoveReference(&pluginsDirectory, PhCreateString2(&pluginsDirectoryNameSr));
+            }
+
+            PhDereferenceObject(applicationDirectory);
+        }
+    }
+
+    if (!InterlockedCompareExchangePointer(
+        &cachedPluginDirectory,
+        pluginsDirectory,
+        NULL
+        ))
+    {
+        PhReferenceObject(pluginsDirectory);
+    }
+
+    return pluginsDirectory;
+}
+
 static BOOLEAN EnumPluginsDirectoryCallback(
-    _In_ PFILE_DIRECTORY_INFORMATION Information,
+    _In_ PFILE_NAMES_INFORMATION Information,
     _In_opt_ PVOID Context
     )
 {
-    static PWSTR PhpPluginBlocklist[] =
+    static PH_STRINGREF PhpPluginExtension = PH_STRINGREF_INIT(L".dll");
+    static PH_STRINGREF PhpPluginBlocklist[] =
     {
-        L"CommonUtil.dll",
-        L"ExtraPlugins.dll",
-        L"SbieSupport.dll"
+        PH_STRINGREF_INIT(L"CommonUtil.dll"),
+        PH_STRINGREF_INIT(L"ExtraPlugins.dll"),
+        PH_STRINGREF_INIT(L"SbieSupport.dll"),
+        PH_STRINGREF_INIT(L"HexPidPlugin.dll")
     };
     BOOLEAN blocklistedPlugin = FALSE;
     PH_STRINGREF baseName;
+    PPH_STRING directoryName;
     PPH_STRING fileName;
 
     baseName.Buffer = Information->FileName;
     baseName.Length = Information->FileNameLength;
 
     // Note: The *.dll pattern passed to NtQueryDirectoryFile includes extensions other than dll (For example: *.dll* or .dllmanifest). (dmex)
-    if (!PhEndsWithStringRef2(&baseName, L".dll", FALSE))
+    if (!PhEndsWithStringRef(&baseName, &PhpPluginExtension, FALSE))
         return TRUE;
 
     for (ULONG i = 0; i < RTL_NUMBER_OF(PhpPluginBlocklist); i++)
     {
-        if (PhEndsWithStringRef2(&baseName, PhpPluginBlocklist[i], TRUE))
+        if (PhEndsWithStringRef(&baseName, &PhpPluginBlocklist[i], TRUE))
         {
             blocklistedPlugin = TRUE;
             break;
         }
     }
 
-    fileName = PhConcatStringRef2(&PluginsDirectory->sr, &baseName);
+    directoryName = PhpGetPluginDirectoryPath();
+    fileName = PhConcatStringRef2(&directoryName->sr, &baseName);
 
     if (blocklistedPlugin)
     {
@@ -240,11 +308,15 @@ static BOOLEAN EnumPluginsDirectoryCallback(
                 PhDereferenceObject(errorMessage);
             }
 
-            PhAddItemList(pluginLoadErrors, loadError);
+            if (pluginLoadErrors)
+            {
+                PhAddItemList(pluginLoadErrors, loadError);
+            }
         }
     }
 
     PhDereferenceObject(fileName);
+    PhDereferenceObject(directoryName);
 
     return TRUE;
 }
@@ -261,45 +333,45 @@ VOID PhLoadPlugins(
     PPH_STRING pluginsDirectory;
     PPH_LIST pluginLoadErrors;
 
+    if (!(pluginsDirectory = PhpGetPluginDirectoryPath()))
+        return;
+
     pluginLoadErrors = PhCreateList(1);
-    pluginsDirectory = PhGetStringSetting(L"PluginsDirectory");
-
-    if (RtlDetermineDosPathNameType_U(pluginsDirectory->Buffer) == RtlPathTypeRelative)
-    {
-        PPH_STRING applicationDirectory;
-
-        if (applicationDirectory = PhGetApplicationDirectory())
-        {
-           PhMoveReference(&pluginsDirectory, PhConcatStrings( // Not absolute. Make sure it is.
-                4,
-                applicationDirectory->Buffer,
-                L"\\",
-                pluginsDirectory->Buffer,
-                L"\\"
-                ));
-
-            PhDereferenceObject(applicationDirectory);
-        }
-    }
-
-    if (PhIsNullOrEmptyString(PluginsDirectory))
-    {
-        PhMoveReference(&PluginsDirectory, pluginsDirectory);
-    }
 
     if (NT_SUCCESS(PhCreateFileWin32(
         &pluginsDirectoryHandle,
-        PhGetString(PluginsDirectory),
-        FILE_GENERIC_READ,
-        FILE_ATTRIBUTE_NORMAL,
-        FILE_SHARE_READ,
+        PhGetString(pluginsDirectory),
+        FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        FILE_ATTRIBUTE_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         FILE_OPEN,
         FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT
         )))
     {
         UNICODE_STRING pattern = RTL_CONSTANT_STRING(L"*.dll");
 
-        PhEnumDirectoryFile(pluginsDirectoryHandle, &pattern, EnumPluginsDirectoryCallback, pluginLoadErrors);
+        if (!NT_SUCCESS(PhEnumDirectoryFileEx(
+            pluginsDirectoryHandle,
+            FileNamesInformation,
+            FALSE,
+            &pattern,
+            EnumPluginsDirectoryCallback,
+            pluginLoadErrors
+            )))
+        {
+            // Note: The MUP devices for Virtualbox and VMware improperly truncate
+            // data returned by NtQueryDirectoryFile when ReturnSingleEntry=FALSE and also have
+            // various other bugs and issues for information classes other than FileNamesInformation. (dmex)  
+            PhEnumDirectoryFileEx(
+                pluginsDirectoryHandle,
+                FileNamesInformation,
+                TRUE,
+                &pattern,
+                EnumPluginsDirectoryCallback,
+                pluginLoadErrors
+                );
+        }
+
         NtClose(pluginsDirectoryHandle);
     }
 
@@ -408,6 +480,7 @@ VOID PhLoadPlugins(
     }
 
     PhDereferenceObject(pluginLoadErrors);
+    PhDereferenceObject(pluginsDirectory);
 }
 
 /**
@@ -478,7 +551,8 @@ VOID PhpExecuteCallbackForAllPlugins(
                     if (!parameters)
                         parameters = PhCreateList(3);
 
-                    PhAddItemList(parameters, PhCreateString2(&parameter));
+                    if (parameters)
+                        PhAddItemList(parameters, PhCreateString2(&parameter));
                 }
             }
         }
@@ -556,7 +630,6 @@ PPH_PLUGIN PhRegisterPlugin(
     plugin = PhAllocateZero(sizeof(PH_PLUGIN));
     plugin->Name = pluginName;
     plugin->DllBase = DllBase;
-
     plugin->FileName = fileName;
 
     existingLinks = PhAddElementAvlTree(&PhPluginsByName, &plugin->Links);
@@ -654,7 +727,7 @@ PPH_CALLBACK PhGetPluginCallback(
     return &Plugin->Callbacks[Callback];
 }
 
-VOID PhInitializeCallbacks( // HACK (dmex)
+VOID PhInitializeCallbacks(
     VOID
     )
 {
@@ -797,8 +870,7 @@ PPH_EMENU_ITEM PhPluginCreateEMenuItem(
     pluginMenuItem->Id = Id;
     pluginMenuItem->Context = Context;
 
-    item = PhCreateEMenuItem(Flags, ID_PLUGIN_MENU_ITEM, Text, NULL, NULL);
-    item->Context = pluginMenuItem;
+    item = PhCreateEMenuItem(Flags, ID_PLUGIN_MENU_ITEM, Text, NULL, pluginMenuItem);
     item->DeleteFunction = PhpPluginEMenuItemDeleteFunction;
 
     return item;
@@ -997,6 +1069,7 @@ VOID PhPluginEnableTreeNewNotify(
     PhCmSetNotifyPlugin(CmData, Plugin);
 }
 
+_Success_(return)
 BOOLEAN PhPluginQueryPhSvc(
     _Out_ PPH_PLUGIN_PHSVC_CLIENT Client
     )
@@ -1034,4 +1107,11 @@ NTSTATUS PhPluginCallPhSvc(
     PhDereferenceObject(apiId);
 
     return status;
+}
+
+PPH_STRING PhGetPluginName(
+    _In_ PPH_PLUGIN Plugin
+    )
+{
+    return PhCreateString2(&Plugin->Name);
 }

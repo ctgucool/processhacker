@@ -3,7 +3,7 @@
  *   application support functions
  *
  * Copyright (C) 2010-2016 wj32
- * Copyright (C) 2017 dmex
+ * Copyright (C) 2017-2019 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -76,18 +76,21 @@ BOOLEAN PhIsProcessSuspended(
     _In_ HANDLE ProcessId
     )
 {
+    BOOLEAN suspended = FALSE;
     PVOID processes;
     PSYSTEM_PROCESS_INFORMATION process;
 
     if (NT_SUCCESS(PhEnumProcesses(&processes)))
     {
         if (process = PhFindProcessInformation(processes, ProcessId))
-            return PhGetProcessIsSuspended(process);
+        {
+            suspended = PhGetProcessIsSuspended(process);
+        }
 
         PhFree(processes);
     }
 
-    return FALSE;
+    return suspended;
 }
 
 /**
@@ -310,7 +313,7 @@ PH_KNOWN_PROCESS_TYPE PhGetProcessKnownTypeEx(
     BOOLEAN isWow64 = FALSE;
 #endif
 
-    if (ProcessId == SYSTEM_PROCESS_ID)
+    if (ProcessId == SYSTEM_PROCESS_ID || ProcessId == SYSTEM_IDLE_PROCESS_ID)
         return SystemProcessType;
 
     if (PhIsNullOrEmptyString(FileName))
@@ -318,7 +321,7 @@ PH_KNOWN_PROCESS_TYPE PhGetProcessKnownTypeEx(
 
     PhGetSystemRoot(&systemRootPrefix);
 
-    fileName = PhDuplicateString(FileName);
+    fileName = PhReferenceObject(FileName);
     name = fileName->sr;
 
     knownProcessType = UnknownProcessType;
@@ -415,7 +418,7 @@ static BOOLEAN NTAPI PhpSvchostCommandLineCallback(
 {
     PPH_KNOWN_PROCESS_COMMAND_LINE knownCommandLine = Context;
 
-    if (Option && Option->Id == 1)
+    if (knownCommandLine && Option && Option->Id == 1)
     {
         PhSwapReference(&knownCommandLine->ServiceHost.GroupName, Value);
     }
@@ -423,6 +426,7 @@ static BOOLEAN NTAPI PhpSvchostCommandLineCallback(
     return TRUE;
 }
 
+_Success_(return)
 BOOLEAN PhaGetProcessKnownCommandLine(
     _In_ PPH_STRING CommandLine,
     _In_ PH_KNOWN_PROCESS_TYPE KnownProcessType,
@@ -561,7 +565,7 @@ BOOLEAN PhaGetProcessKnownCommandLine(
 
             // Find "/processid:"; the GUID is just after that.
 
-            _wcsupr(argPart->Buffer);
+            PhUpperString(argPart);
             indexOfProcessId = PhFindStringInString(argPart, 0, L"/PROCESSID:");
 
             if (indexOfProcessId == -1)
@@ -936,9 +940,9 @@ VOID PhCopyListViewInfoTip(
     memcpy(
         &GetInfoTip->pszText[copyIndex],
         Tip->Buffer,
-        copyLength * 2
+        copyLength * sizeof(WCHAR)
         );
-    GetInfoTip->pszText[copyIndex + copyLength] = 0;
+    GetInfoTip->pszText[copyIndex + copyLength] = UNICODE_NULL;
 }
 
 VOID PhCopyListView(
@@ -1090,6 +1094,13 @@ VOID PhGetPhVersionNumbers(
         *RevisionNumber = PHAPP_VERSION_REVISION;
 }
 
+PPH_STRING PhGetPhVersionHash(
+    VOID
+    )
+{
+    return PhConvertUtf8ToUtf16(PHAPP_VERSION_COMMIT);
+}
+
 VOID PhWritePhTextHeader(
     _Inout_ PPH_FILE_STREAM FileStream
     )
@@ -1097,7 +1108,6 @@ VOID PhWritePhTextHeader(
     PPH_STRING version;
     LARGE_INTEGER time;
     SYSTEMTIME systemTime;
-    PPH_STRING dateString;
     PPH_STRING timeString;
 
     PhWriteStringAsUtf8FileStream2(FileStream, L"Process Hacker ");
@@ -1108,9 +1118,9 @@ VOID PhWritePhTextHeader(
         PhDereferenceObject(version);
     }
 
-    PhWriteStringFormatAsUtf8FileStream(FileStream, L"\r\nWindows NT %u.%u", PhOsVersion.dwMajorVersion, PhOsVersion.dwMinorVersion);
+    PhWriteStringFormatAsUtf8FileStream(FileStream, L"\r\nWindows NT %lu.%lu", PhOsVersion.dwMajorVersion, PhOsVersion.dwMinorVersion);
 
-    if (PhOsVersion.szCSDVersion[0] != 0)
+    if (PhOsVersion.szCSDVersion[0] != UNICODE_NULL)
         PhWriteStringFormatAsUtf8FileStream(FileStream, L" %s", PhOsVersion.szCSDVersion);
 
 #ifdef _WIN64
@@ -1122,10 +1132,8 @@ VOID PhWritePhTextHeader(
     PhQuerySystemTime(&time);
     PhLargeIntegerToLocalSystemTime(&systemTime, &time);
 
-    dateString = PhFormatDate(&systemTime, NULL);
-    timeString = PhFormatTime(&systemTime, NULL);
-    PhWriteStringFormatAsUtf8FileStream(FileStream, L"\r\n%s %s\r\n\r\n", dateString->Buffer, timeString->Buffer);
-    PhDereferenceObject(dateString);
+    timeString = PhFormatDateTime(&systemTime);
+    PhWriteStringFormatAsUtf8FileStream(FileStream, L"\r\n%s\r\n\r\n", timeString->Buffer);
     PhDereferenceObject(timeString);
 }
 
@@ -1223,7 +1231,7 @@ BOOLEAN PhShellProcessHackerEx(
             PhAppendStringBuilder2(&sb, L" -newinstance");
 
         if (PhStartupParameters.SelectPid != 0)
-            PhAppendFormatStringBuilder(&sb, L" -selectpid %u", PhStartupParameters.SelectPid);
+            PhAppendFormatStringBuilder(&sb, L" -selectpid %lu", PhStartupParameters.SelectPid);
 
         if (PhStartupParameters.PriorityClass != 0)
         {
@@ -1314,15 +1322,8 @@ BOOLEAN PhCreateProcessIgnoreIfeoDebugger(
     )
 {
     BOOLEAN result;
-    BOOL (NTAPI *debugSetProcessKillOnExit)(BOOL);
-    BOOL (NTAPI *debugActiveProcessStop)(ULONG);
     BOOLEAN originalValue;
-    STARTUPINFO startupInfo;
-    PROCESS_INFORMATION processInfo;
-
-    if (!(debugSetProcessKillOnExit = PhGetDllProcedureAddress(L"kernel32.dll", "DebugSetProcessKillOnExit", 0)) ||
-        !(debugActiveProcessStop = PhGetDllProcedureAddress(L"kernel32.dll", "DebugActiveProcessStop", 0)))
-        return FALSE;
+    HANDLE processHandle;
 
     result = FALSE;
 
@@ -1331,25 +1332,45 @@ BOOLEAN PhCreateProcessIgnoreIfeoDebugger(
     NtCurrentPeb()->ReadImageFileExecOptions = FALSE;
     RtlLeaveCriticalSection(NtCurrentPeb()->FastPebLock);
 
-    memset(&startupInfo, 0, sizeof(STARTUPINFO));
-    startupInfo.cb = sizeof(STARTUPINFO);
-    memset(&processInfo, 0, sizeof(PROCESS_INFORMATION));
-
     // The combination of ReadImageFileExecOptions = FALSE and the DEBUG_PROCESS flag
-    // allows us to skip the Debugger IFEO value.
-    if (CreateProcess(FileName, NULL, NULL, NULL, FALSE, DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS, NULL, NULL, &startupInfo, &processInfo))
+    // allows us to skip the Debugger IFEO value. (wj32)
+
+    if (NT_SUCCESS(PhCreateProcessWin32(
+        FileName,
+        NULL,
+        NULL,
+        NULL,
+        PH_CREATE_PROCESS_DEBUG | PH_CREATE_PROCESS_DEBUG_ONLY_THIS_PROCESS,
+        NULL,
+        &processHandle,
+        NULL
+        )))
     {
-        // Stop debugging the process now.
-        debugSetProcessKillOnExit(FALSE);
-        debugActiveProcessStop(processInfo.dwProcessId);
+        HANDLE debugObjectHandle;
+
+        if (NT_SUCCESS(PhGetProcessDebugObject(
+            processHandle,
+            &debugObjectHandle
+            )))
+        {
+            // Disable kill-on-close.
+            if (NT_SUCCESS(PhSetDebugKillProcessOnExit(
+                debugObjectHandle,
+                FALSE
+                )))
+            {
+                // Stop debugging the process now.
+                NtRemoveProcessDebug(processHandle, debugObjectHandle);
+            }
+
+            NtClose(debugObjectHandle);
+        }
+
         result = TRUE;
+
+        NtClose(processHandle);
     }
 
-    if (processInfo.hProcess)
-        NtClose(processInfo.hProcess);
-    if (processInfo.hThread)
-        NtClose(processInfo.hThread);
-    
     if (originalValue)
     {
         RtlEnterCriticalSection(NtCurrentPeb()->FastPebLock);
@@ -1403,18 +1424,18 @@ VOID PhInitializeTreeNewColumnMenuEx(
             resetSortMenuItem = PhCreateEMenuItem(0, PH_TN_COLUMN_MENU_RESET_SORT_ID, L"Reset sort", NULL, NULL);
     }
 
-    PhInsertEMenuItem(Data->Menu, sizeColumnToFitMenuItem, -1);
-    PhInsertEMenuItem(Data->Menu, sizeAllColumnsToFitMenuItem, -1);
+    PhInsertEMenuItem(Data->Menu, sizeColumnToFitMenuItem, ULONG_MAX);
+    PhInsertEMenuItem(Data->Menu, sizeAllColumnsToFitMenuItem, ULONG_MAX);
 
     if (!(Flags & PH_TN_COLUMN_MENU_NO_VISIBILITY))
     {
-        PhInsertEMenuItem(Data->Menu, hideColumnMenuItem, -1);
+        PhInsertEMenuItem(Data->Menu, hideColumnMenuItem, ULONG_MAX);
 
         if (resetSortMenuItem)
-            PhInsertEMenuItem(Data->Menu, resetSortMenuItem, -1);
+            PhInsertEMenuItem(Data->Menu, resetSortMenuItem, ULONG_MAX);
 
-        PhInsertEMenuItem(Data->Menu, PhCreateEMenuSeparator(), -1);
-        PhInsertEMenuItem(Data->Menu, chooseColumnsMenuItem, -1);
+        PhInsertEMenuItem(Data->Menu, PhCreateEMenuSeparator(), ULONG_MAX);
+        PhInsertEMenuItem(Data->Menu, chooseColumnsMenuItem, ULONG_MAX);
 
         if (TreeNew_GetFixedColumn(Data->TreeNewHandle))
             minimumNumberOfColumns = 2; // don't allow user to remove all normal columns (the fixed column can never be removed)
@@ -1432,7 +1453,7 @@ VOID PhInitializeTreeNewColumnMenuEx(
     else
     {
         if (resetSortMenuItem)
-            PhInsertEMenuItem(Data->Menu, resetSortMenuItem, -1);
+            PhInsertEMenuItem(Data->Menu, resetSortMenuItem, ULONG_MAX);
     }
 
     if (!Data->MouseEvent || !Data->MouseEvent->Column)
@@ -1633,7 +1654,7 @@ VOID PhRemoveTreeNewFilter(
 
     index = PhFindItemList(Support->FilterList, Entry);
 
-    if (index != -1)
+    if (index != ULONG_MAX)
     {
         PhRemoveItemList(Support->FilterList, index);
         PhFree(Entry);
@@ -1709,8 +1730,8 @@ BOOLEAN PhInsertCopyCellEMenuItem(
     _In_ PPH_TREENEW_COLUMN Column
     )
 {
-    PPH_EMENU_ITEM parentItem;
-    ULONG indexInParent;
+    PPH_EMENU_ITEM parentItem = NULL;
+    ULONG indexInParent = 0;
     PPH_COPY_CELL_CONTEXT context;
     PH_STRINGREF columnText;
     PPH_STRING escapedText;
@@ -1796,6 +1817,127 @@ BOOLEAN PhHandleCopyCellEMenuItem(
     return TRUE;
 }
 
+VOID NTAPI PhpCopyListViewEMenuItemDeleteFunction(
+    _In_ struct _PH_EMENU_ITEM *Item
+    )
+{
+    PPH_COPY_ITEM_CONTEXT context;
+
+    context = Item->Context;
+    PhDereferenceObject(context->MenuItemText);
+    PhFree(context);
+}
+
+BOOLEAN PhInsertCopyListViewEMenuItem(
+    _In_ struct _PH_EMENU_ITEM *Menu,
+    _In_ ULONG InsertAfterId,
+    _In_ HWND ListViewHandle
+    )
+{
+    PPH_EMENU_ITEM parentItem = NULL;
+    ULONG indexInParent = 0;
+    PPH_COPY_ITEM_CONTEXT context;
+    PPH_STRING columnText = NULL;
+    PPH_STRING escapedText;
+    PPH_STRING menuItemText;
+    PPH_EMENU_ITEM copyMenuItem;
+    POINT location;
+    LVHITTESTINFO lvHitInfo;
+    HDITEM headerItem;
+    WCHAR headerText[MAX_PATH] = L"";
+
+    if (!GetCursorPos(&location))
+        return FALSE;
+    if (!ScreenToClient(ListViewHandle, &location))
+        return FALSE;
+
+    memset(&lvHitInfo, 0, sizeof(LVHITTESTINFO));
+    lvHitInfo.pt = location;
+
+    if (ListView_SubItemHitTest(ListViewHandle, &lvHitInfo) == -1)
+        return FALSE;
+
+    memset(headerText, 0, sizeof(headerText));
+    memset(&headerItem, 0, sizeof(HDITEM));
+    headerItem.mask = HDI_TEXT;
+    headerItem.cchTextMax = RTL_NUMBER_OF(headerText);
+    headerItem.pszText = headerText;
+
+    if (!Header_GetItem(ListView_GetHeader(ListViewHandle), lvHitInfo.iSubItem, &headerItem))
+        return FALSE;
+
+    columnText = PhaCreateString(headerText);
+
+    if (PhIsNullOrEmptyString(columnText))
+        return FALSE;
+
+    if (!PhFindEMenuItemEx(Menu, 0, NULL, InsertAfterId, &parentItem, &indexInParent))
+        return FALSE;
+
+    indexInParent++;
+
+    context = PhAllocate(sizeof(PH_COPY_ITEM_CONTEXT));
+    context->ListViewHandle = ListViewHandle;
+    context->Id = lvHitInfo.iItem;
+    context->SubId = lvHitInfo.iSubItem;
+
+    escapedText = PhEscapeStringForMenuPrefix(&columnText->sr);
+    menuItemText = PhFormatString(L"Copy \"%s\"", escapedText->Buffer);
+    PhDereferenceObject(escapedText);
+
+    copyMenuItem = PhCreateEMenuItem(0, ID_COPY_CELL, menuItemText->Buffer, NULL, context);
+    copyMenuItem->DeleteFunction = PhpCopyListViewEMenuItemDeleteFunction;
+    context->MenuItemText = menuItemText;
+
+    PhInsertEMenuItem(parentItem, copyMenuItem, indexInParent);
+
+    return TRUE;
+}
+
+BOOLEAN PhHandleCopyListViewEMenuItem(
+    _In_ struct _PH_EMENU_ITEM *SelectedItem
+    )
+{
+    PPH_COPY_ITEM_CONTEXT context;
+    PH_STRING_BUILDER stringBuilder;
+    ULONG count;
+    ULONG selectedCount;
+    ULONG i;
+    PPH_STRING getItemText;
+
+    if (!SelectedItem)
+        return FALSE;
+    if (SelectedItem->Id != ID_COPY_CELL)
+        return FALSE;
+
+    context = SelectedItem->Context;
+
+    PhInitializeStringBuilder(&stringBuilder, 0x100);
+    count = ListView_GetItemCount(context->ListViewHandle);
+    selectedCount = 0;
+
+    for (i = 0; i < count; i++)
+    {
+        if (!(ListView_GetItemState(context->ListViewHandle, i, LVIS_SELECTED) & LVIS_SELECTED))
+            continue;
+
+        getItemText = PhaGetListViewItemText(context->ListViewHandle, i, context->SubId);
+
+        PhAppendStringBuilder(&stringBuilder, &getItemText->sr);
+        PhAppendStringBuilder2(&stringBuilder, L"\r\n");
+
+        selectedCount++;
+    }
+
+    if (stringBuilder.String->Length != 0 && selectedCount == 1)
+        PhRemoveEndStringBuilder(&stringBuilder, 2);
+
+    PhSetClipboardString(context->ListViewHandle, &stringBuilder.String->sr);
+    PhDeleteStringBuilder(&stringBuilder);
+
+    return TRUE;
+}
+
 BOOLEAN PhpSelectFavoriteInRegedit(
     _In_ HWND RegeditWindow,
     _In_ PPH_STRINGREF FavoriteName,
@@ -1806,7 +1948,7 @@ BOOLEAN PhpSelectFavoriteInRegedit(
     HMENU favoritesMenu;
     ULONG count;
     ULONG i;
-    ULONG id = -1;
+    ULONG id = ULONG_MAX;
 
     if (!(menu = GetMenu(RegeditWindow)))
         return FALSE;
@@ -1832,11 +1974,11 @@ BOOLEAN PhpSelectFavoriteInRegedit(
     for (i = 3; i < count; i++)
     {
         MENUITEMINFO info = { sizeof(MENUITEMINFO) };
-        WCHAR buffer[32];
+        WCHAR buffer[MAX_PATH];
 
         info.fMask = MIIM_ID | MIIM_STRING;
         info.dwTypeData = buffer;
-        info.cch = sizeof(buffer) / sizeof(WCHAR);
+        info.cch = RTL_NUMBER_OF(buffer);
         GetMenuItemInfo(favoritesMenu, i, TRUE, &info);
 
         if (info.cch == FavoriteName->Length / sizeof(WCHAR))
@@ -1854,7 +1996,7 @@ BOOLEAN PhpSelectFavoriteInRegedit(
         }
     }
 
-    if (id == -1)
+    if (id == ULONG_MAX)
         return FALSE;
 
     // Activate our entry.
@@ -1870,7 +2012,7 @@ BOOLEAN PhpSelectFavoriteInRegedit(
         PostMessage(RegeditWindow, WM_MENUSELECT, MAKEWPARAM(0, 0xffff), 0);
 
     // Bring regedit to the top.
-    if (IsIconic(RegeditWindow))
+    if (IsMinimized(RegeditWindow))
     {
         ShowWindow(RegeditWindow, SW_RESTORE);
         SetForegroundWindow(RegeditWindow);
@@ -1937,8 +2079,8 @@ BOOLEAN PhShellOpenKey2(
     RtlInitUnicodeString(&valueName, favoriteName);
     PhUnicodeStringToStringRef(&valueName, &valueNameSr);
 
-    expandedKeyName = PhExpandKeyName(KeyName, TRUE);
-    NtSetValueKey(favoritesKeyHandle, &valueName, 0, REG_SZ, expandedKeyName->Buffer, (ULONG)expandedKeyName->Length + 2);
+    expandedKeyName = PhExpandKeyName(KeyName, FALSE);
+    NtSetValueKey(favoritesKeyHandle, &valueName, 0, REG_SZ, expandedKeyName->Buffer, (ULONG)expandedKeyName->Length + sizeof(UNICODE_NULL));
     PhDereferenceObject(expandedKeyName);
 
     // Select our entry in regedit.
@@ -2004,4 +2146,345 @@ HBITMAP PhGetShieldBitmap(
     }
 
     return shieldBitmap;
+}
+
+// HACK - nightly build feature testing (dmex)
+// TODO - move definitions to proper locations.
+#include <taskschd.h>
+DEFINE_GUID(CLSID_TaskScheduler, 0x0f87369f, 0xa4e5, 0x4cfc, 0xbd, 0x3e, 0x73, 0xe6, 0x15, 0x45, 0x72, 0xdd);
+DEFINE_GUID(IID_ITaskService, 0x2FABA4C7, 0x4DA9, 0x4013, 0x96, 0x97, 0x20, 0xCC, 0x3F, 0xD4, 0x0F, 0x85);
+DEFINE_GUID(IID_ITaskSettings2, 0x2C05C3F0, 0x6EED, 0x4C05, 0xA1, 0x5F, 0xED, 0x7D, 0x7A, 0x98, 0xA3, 0x69);
+DEFINE_GUID(IID_ILogonTrigger, 0x72DADE38, 0xFAE4, 0x4b3e, 0xBA, 0xF4, 0x5D, 0x00, 0x9A, 0xF0, 0x2B, 0x1C);
+DEFINE_GUID(IID_IExecAction, 0x4C3D624D, 0xfd6b, 0x49A3, 0xB9, 0xB7, 0x09, 0xCB, 0x3C, 0xD3, 0xF0, 0x47);
+
+HRESULT PhRunAsAdminTask(
+    _In_ PWSTR TaskName
+    )
+{
+    HRESULT status = S_FALSE;
+    VARIANT empty = { VT_EMPTY };
+    ITaskService* taskService = NULL;
+    ITaskFolder* taskFolder = NULL;
+    IRegisteredTask* taskRegisteredTask = NULL;
+    IRunningTask* taskRunningTask = NULL;
+
+    status = PhGetClassObject(
+        L"taskschd.dll",
+        &CLSID_TaskScheduler,
+        &IID_ITaskService,
+        &taskService
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = ITaskService_Connect(
+        taskService,
+        empty,
+        empty,
+        empty,
+        empty
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = ITaskService_GetFolder(
+        taskService,
+        L"\\",
+        &taskFolder
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = ITaskFolder_GetTask(
+        taskFolder,
+        TaskName,
+        &taskRegisteredTask
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = IRegisteredTask_RunEx(
+        taskRegisteredTask,
+        empty,
+        TASK_RUN_AS_SELF,
+        0,
+        NULL,
+        &taskRunningTask
+        );
+
+CleanupExit:
+
+    if (taskRunningTask)
+        IRunningTask_Release(taskRunningTask);
+    if (taskRegisteredTask)
+        IRegisteredTask_Release(taskRegisteredTask);
+    if (taskFolder)
+        ITaskFolder_Release(taskFolder);
+    if (taskService)
+        ITaskService_Release(taskService);
+
+    return status;
+}
+
+HRESULT PhDeleteAdminTask(
+    _In_ PWSTR TaskName
+    )
+{
+    HRESULT status = S_FALSE;
+    VARIANT empty = { VT_EMPTY };
+    ITaskService* taskService = NULL;
+    ITaskFolder* taskFolder = NULL;
+
+    status = PhGetClassObject(
+        L"taskschd.dll",
+        &CLSID_TaskScheduler,
+        &IID_ITaskService,
+        &taskService
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = ITaskService_Connect(
+        taskService,
+        empty,
+        empty,
+        empty,
+        empty
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = ITaskService_GetFolder(
+        taskService,
+        L"\\",
+        &taskFolder
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = ITaskFolder_DeleteTask(
+        taskFolder,
+        TaskName,
+        0
+        );
+
+CleanupExit:
+
+    if (taskFolder)
+        ITaskFolder_Release(taskFolder);
+    if (taskService)
+        ITaskService_Release(taskService);
+
+    return status;
+}
+
+HRESULT PhCreateAdminTask(
+    _In_ PWSTR TaskName,
+    _In_ PWSTR FileName
+    )
+{
+    HRESULT status = S_FALSE;
+    VARIANT empty = { VT_EMPTY };
+    ITaskService* taskService = NULL;
+    ITaskFolder* taskFolder = NULL;
+    ITaskDefinition* taskDefinition = NULL;
+    ITaskSettings* taskSettings = NULL;
+    ITaskSettings2* taskSettings2 = NULL;
+    ITriggerCollection* taskTriggerCollection = NULL;
+    ITrigger* taskTrigger = NULL;
+    ILogonTrigger* taskLogonTrigger = NULL;
+    IRegisteredTask* taskRegisteredTask = NULL;
+    IPrincipal* taskPrincipal = NULL;
+    IActionCollection* taskActionCollection = NULL;
+    IAction* taskAction = NULL;
+    IExecAction* taskExecAction = NULL;
+
+    status = PhGetClassObject(
+        L"taskschd.dll",
+        &CLSID_TaskScheduler,
+        &IID_ITaskService,
+        &taskService
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = ITaskService_Connect(
+        taskService,
+        empty,
+        empty,
+        empty,
+        empty
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = ITaskService_GetFolder(
+        taskService,
+        L"\\",
+        &taskFolder
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = ITaskService_NewTask(
+        taskService,
+        0,
+        &taskDefinition
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = ITaskDefinition_get_Settings(
+        taskDefinition,
+        &taskSettings
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    ITaskSettings_put_Compatibility(taskSettings, TASK_COMPATIBILITY_V2_1);
+    ITaskSettings_put_StartWhenAvailable(taskSettings, VARIANT_TRUE);
+    ITaskSettings_put_DisallowStartIfOnBatteries(taskSettings, VARIANT_FALSE);
+    ITaskSettings_put_StopIfGoingOnBatteries(taskSettings, VARIANT_FALSE);
+    ITaskSettings_put_ExecutionTimeLimit(taskSettings, L"PT0S");
+    //ITaskSettings_put_Priority(taskSettings, 1);
+
+    if (SUCCEEDED(ITaskSettings_QueryInterface(
+        taskSettings,
+        &IID_ITaskSettings2,
+        &taskSettings2
+        )))
+    {
+        ITaskSettings2_put_UseUnifiedSchedulingEngine(taskSettings2, VARIANT_TRUE);
+        ITaskSettings2_put_DisallowStartOnRemoteAppSession(taskSettings2, VARIANT_TRUE);
+        ITaskSettings2_Release(taskSettings2);
+    }
+
+    //status = ITaskDefinition_get_Triggers(
+    //    taskDefinition,
+    //    &taskTriggerCollection
+    //    );
+    //
+    //if (FAILED(status))
+    //    goto CleanupExit;
+    //
+    //status = ITriggerCollection_Create(
+    //    taskTriggerCollection,
+    //    TASK_TRIGGER_LOGON,
+    //    &taskTrigger
+    //    );
+    //
+    //if (FAILED(status))
+    //    goto CleanupExit;
+    //
+    //status = ITrigger_QueryInterface(
+    //    taskTrigger,
+    //    &IID_ILogonTrigger,
+    //    &taskLogonTrigger
+    //    );
+    //
+    //if (FAILED(status))
+    //    goto CleanupExit;
+    //
+    //ILogonTrigger_put_Id(taskLogonTrigger, L"LogonTriggerId");
+    //ILogonTrigger_put_UserId(taskLogonTrigger, PhGetString(PhGetTokenUserString(PhGetOwnTokenAttributes().TokenHandle, TRUE)));
+
+    status = ITaskDefinition_get_Principal(
+        taskDefinition,
+        &taskPrincipal
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    IPrincipal_put_RunLevel(taskPrincipal, TASK_RUNLEVEL_HIGHEST);
+    IPrincipal_put_LogonType(taskPrincipal, TASK_LOGON_INTERACTIVE_TOKEN);
+        
+    status = ITaskDefinition_get_Actions(
+        taskDefinition,
+        &taskActionCollection
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = IActionCollection_Create(
+        taskActionCollection,
+        TASK_ACTION_EXEC,
+        &taskAction
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = IAction_QueryInterface(
+        taskAction,
+        &IID_IExecAction,
+        &taskExecAction
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    status = IExecAction_put_Path(
+        taskExecAction,
+        FileName
+        );
+
+    if (FAILED(status))
+        goto CleanupExit;
+
+    ITaskFolder_DeleteTask(
+        taskFolder,
+        TaskName,
+        0
+        );
+
+    status = ITaskFolder_RegisterTaskDefinition(
+        taskFolder,
+        TaskName,
+        taskDefinition,
+        TASK_CREATE_OR_UPDATE,
+        empty,
+        empty,
+        TASK_LOGON_INTERACTIVE_TOKEN,
+        empty,
+        &taskRegisteredTask
+        );
+
+CleanupExit:
+
+    if (taskRegisteredTask)
+        IRegisteredTask_Release(taskRegisteredTask);
+    if (taskActionCollection)
+        IActionCollection_Release(taskActionCollection);
+    if (taskPrincipal)
+        IPrincipal_Release(taskPrincipal);
+    if (taskLogonTrigger)
+        ILogonTrigger_Release(taskLogonTrigger);
+    if (taskTrigger)
+        ITrigger_Release(taskTrigger);
+    if (taskTriggerCollection)
+        ITriggerCollection_Release(taskTriggerCollection);
+    if (taskSettings)
+        ITaskSettings_Release(taskSettings);
+    if (taskDefinition)
+        ITaskDefinition_Release(taskDefinition);
+    if (taskFolder)
+        ITaskFolder_Release(taskFolder);
+    if (taskService)
+        ITaskService_Release(taskService);
+
+    return status;
 }

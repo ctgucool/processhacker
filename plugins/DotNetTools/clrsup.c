@@ -225,7 +225,7 @@ HRESULT CreateXCLRDataProcess(
     ULONG flags;
     BOOLEAN clrV4;
     HMODULE dllBase;
-    HRESULT (__stdcall *clrDataCreateInstance)(REFIID, ICLRDataTarget *, void **);
+    PFN_CLRDataCreateInstance clrDataCreateInstance;
 
     clrV4 = FALSE;
 
@@ -403,11 +403,14 @@ BOOLEAN NTAPI PhpGetImageBaseCallback(
 {
     PPHP_GET_IMAGE_BASE_CONTEXT context = Context;
 
-    if (RtlEqualUnicodeString(&Module->FullDllName, &context->ImagePath, TRUE) ||
-        RtlEqualUnicodeString(&Module->BaseDllName, &context->ImagePath, TRUE))
+    if (context)
     {
-        context->BaseAddress = Module->DllBase;
-        return FALSE;
+        if (RtlEqualUnicodeString(&Module->FullDllName, &context->ImagePath, TRUE) ||
+            RtlEqualUnicodeString(&Module->BaseDllName, &context->ImagePath, TRUE))
+        {
+            context->BaseAddress = Module->DllBase;
+            return FALSE;
+        }
     }
 
     return TRUE;

@@ -2,7 +2,7 @@
  * Process Hacker -
  *   PE viewer
  *
- * Copyright (C) 2018 dmex
+ * Copyright (C) 2018-2019 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -50,6 +50,17 @@ VOID PvpPeEnumerateFilePropStore(
             );
     }
 
+    if (FAILED(status))
+    {
+        status = SHGetPropertyStoreFromParsingName(
+            PvFileName->Buffer,
+            NULL,
+            GPS_DEFAULT, // required for Windows 7 (dmex)
+            &IID_IPropertyStore,
+            &propstore
+            );
+    }
+
     if (SUCCEEDED(status))
     {
         if (SUCCEEDED(IPropertyStore_GetCount(propstore, &count)))
@@ -70,7 +81,23 @@ VOID PvpPeEnumerateFilePropStore(
 
                     if (SUCCEEDED(PSGetNameFromPropertyKey(&propkey, &propKeyName)))
                     {
+                        IPropertyDescription* propertyDescriptionPtr = NULL;
+
                         PhSetListViewSubItem(ListViewHandle, lvItemIndex, 1, propKeyName);
+
+                        if (SUCCEEDED(PSGetPropertyDescriptionByName(propKeyName, &IID_IPropertyDescription, &propertyDescriptionPtr)))
+                        {
+                            PWSTR propertyLabel = NULL;
+
+                            if (SUCCEEDED(IPropertyDescription_GetDisplayName(propertyDescriptionPtr, &propertyLabel)))
+                            {
+                                PhSetListViewSubItem(ListViewHandle, lvItemIndex, 3, propertyLabel);
+                                CoTaskMemFree(propertyLabel);
+                            }
+
+                            IPropertyDescription_Release(propertyDescriptionPtr);
+                        }
+       
                         CoTaskMemFree(propKeyName);
                     }
                     else
@@ -126,6 +153,7 @@ INT_PTR CALLBACK PvpPePropStoreDlgProc(
             PhAddListViewColumn(lvHandle, 0, 0, 0, LVCFMT_LEFT, 40, L"#");
             PhAddListViewColumn(lvHandle, 1, 1, 1, LVCFMT_LEFT, 150, L"Name");
             PhAddListViewColumn(lvHandle, 2, 2, 2, LVCFMT_LEFT, 250, L"Value");
+            PhAddListViewColumn(lvHandle, 3, 3, 3, LVCFMT_LEFT, 150, L"Description");
             PhSetExtendedListView(lvHandle);
             PhLoadListViewColumnsFromSetting(L"ImagePropertiesListViewColumns", lvHandle);
 
@@ -158,6 +186,11 @@ INT_PTR CALLBACK PvpPePropStoreDlgProc(
     case WM_NOTIFY:
         {
             PvHandleListViewNotifyForCopy(lParam, GetDlgItem(hwndDlg, IDC_LIST));
+        }
+        break;
+    case WM_CONTEXTMENU:
+        {
+            PvHandleListViewCommandCopy(hwndDlg, lParam, wParam, GetDlgItem(hwndDlg, IDC_LIST));
         }
         break;
     }

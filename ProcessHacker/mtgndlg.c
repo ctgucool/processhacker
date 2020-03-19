@@ -181,29 +181,30 @@ INT_PTR CALLBACK PhpProcessMitigationPolicyDlgProc(
 
             if (context->SystemDllInitBlock && RTL_CONTAINS_FIELD(context->SystemDllInitBlock, context->SystemDllInitBlock->Size, MitigationOptionsMap))
             {
-                if (context->SystemDllInitBlock->MitigationOptionsMap.Map[0] & PROCESS_CREATION_MITIGATION_POLICY2_LOADER_INTEGRITY_CONTINUITY_ALWAYS_ON)
-                {
-                    PMITIGATION_POLICY_ENTRY entry;
+                // TODO: Windows doesn't propagate these flags into the MitigationOptionsMap array. (dmex)
+                //if (context->SystemDllInitBlock->MitigationOptionsMap.Map[0] & PROCESS_CREATION_MITIGATION_POLICY2_LOADER_INTEGRITY_CONTINUITY_ALWAYS_ON)
+                //{
+                //    PMITIGATION_POLICY_ENTRY entry;
+                //
+                //    entry = PhAllocate(sizeof(MITIGATION_POLICY_ENTRY));
+                //    entry->NonStandard = TRUE;
+                //    entry->ShortDescription = PhCreateString(L"Loader Integrity");
+                //    entry->LongDescription = PhCreateString(L"OS signing levels for dependent module loads are enabled.");
+                //
+                //    PhAddListViewItem(lvHandle, MAXINT, entry->ShortDescription->Buffer, entry);
+                //}
 
-                    entry = PhAllocate(sizeof(MITIGATION_POLICY_ENTRY));
-                    entry->NonStandard = TRUE;
-                    entry->ShortDescription = PhCreateString(L"Loader Integrity");
-                    entry->LongDescription = PhCreateString(L"OS signing levels for depenedent module loads are enabled.");
-
-                    PhAddListViewItem(lvHandle, MAXINT, entry->ShortDescription->Buffer, entry);
-                }
-
-                if (context->SystemDllInitBlock->MitigationOptionsMap.Map[0] & PROCESS_CREATION_MITIGATION_POLICY2_MODULE_TAMPERING_PROTECTION_ALWAYS_ON)
-                {
-                    PMITIGATION_POLICY_ENTRY entry;
-
-                    entry = PhAllocate(sizeof(MITIGATION_POLICY_ENTRY));
-                    entry->NonStandard = TRUE;
-                    entry->ShortDescription = PhCreateString(L"Module Tampering");
-                    entry->LongDescription = PhCreateString(L"Module Tampering protection is enabled.");
-
-                    PhAddListViewItem(lvHandle, MAXINT, entry->ShortDescription->Buffer, entry);
-                }
+                //if (context->SystemDllInitBlock->MitigationOptionsMap.Map[0] & PROCESS_CREATION_MITIGATION_POLICY2_MODULE_TAMPERING_PROTECTION_ALWAYS_ON)
+                //{
+                //    PMITIGATION_POLICY_ENTRY entry;
+                //
+                //    entry = PhAllocate(sizeof(MITIGATION_POLICY_ENTRY));
+                //    entry->NonStandard = TRUE;
+                //    entry->ShortDescription = PhCreateString(L"Module Tampering");
+                //    entry->LongDescription = PhCreateString(L"Module Tampering protection is enabled.");
+                //
+                //    PhAddListViewItem(lvHandle, MAXINT, entry->ShortDescription->Buffer, entry);
+                //}
 
                 if (context->SystemDllInitBlock->MitigationOptionsMap.Map[0] & PROCESS_CREATION_MITIGATION_POLICY2_RESTRICT_INDIRECT_BRANCH_PREDICTION_ALWAYS_ON)
                 {
@@ -214,6 +215,30 @@ INT_PTR CALLBACK PhpProcessMitigationPolicyDlgProc(
                     entry->ShortDescription = PhCreateString(L"Indirect branch prediction");
                     entry->LongDescription = PhCreateString(L"Protects against sibling hardware threads (hyperthreads) from interfering with indirect branch predictions.");
                 
+                    PhAddListViewItem(lvHandle, MAXINT, entry->ShortDescription->Buffer, entry);
+                }
+
+                if (context->SystemDllInitBlock->MitigationOptionsMap.Map[0] & PROCESS_CREATION_MITIGATION_POLICY2_ALLOW_DOWNGRADE_DYNAMIC_CODE_POLICY_ALWAYS_ON)
+                {
+                    PMITIGATION_POLICY_ENTRY entry;
+
+                    entry = PhAllocate(sizeof(MITIGATION_POLICY_ENTRY));
+                    entry->NonStandard = TRUE;
+                    entry->ShortDescription = PhCreateString(L"Dynamic code (downgrade)");
+                    entry->LongDescription = PhCreateString(L"Allows a broker to downgrade the dynamic code policy for a process.");
+
+                    PhAddListViewItem(lvHandle, MAXINT, entry->ShortDescription->Buffer, entry);
+                }
+
+                if (context->SystemDllInitBlock->MitigationOptionsMap.Map[0] & PROCESS_CREATION_MITIGATION_POLICY2_SPECULATIVE_STORE_BYPASS_DISABLE_ALWAYS_ON)
+                {
+                    PMITIGATION_POLICY_ENTRY entry;
+
+                    entry = PhAllocate(sizeof(MITIGATION_POLICY_ENTRY));
+                    entry->NonStandard = TRUE;
+                    entry->ShortDescription = PhCreateString(L"Speculative store bypass");
+                    entry->LongDescription = PhCreateString(L"Disables spectre mitigations for the process.");
+
                     PhAddListViewItem(lvHandle, MAXINT, entry->ShortDescription->Buffer, entry);
                 }
             }

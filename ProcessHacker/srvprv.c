@@ -84,6 +84,7 @@ typedef struct _PH_SERVICE_QUERY_DATA
 {
     SLIST_ENTRY ListEntry;
     ULONG Stage;
+    SC_HANDLE ServiceManagerHandle;
     PPH_SERVICE_ITEM ServiceItem;
 } PH_SERVICE_QUERY_DATA, *PPH_SERVICE_QUERY_DATA;
 
@@ -509,9 +510,14 @@ VOID PhpServiceQueryStage1(
     )
 {
     PPH_SERVICE_ITEM serviceItem = Data->Header.ServiceItem;
+    SC_HANDLE serviceManagerHandle = Data->Header.ServiceManagerHandle;
     SC_HANDLE serviceHandle;
 
-    if (serviceHandle = PhOpenService(serviceItem->Name->Buffer, SERVICE_QUERY_CONFIG))
+    if (serviceHandle = OpenService(
+        serviceManagerHandle,
+        serviceItem->Name->Buffer,
+        SERVICE_QUERY_CONFIG
+        ))
     {
         Data->FileName = PhGetServiceRelevantFileName(&serviceItem->Name->sr, serviceHandle);
         CloseServiceHandle(serviceHandle);
@@ -529,7 +535,7 @@ VOID PhpServiceQueryStage1(
         //PhInitializeImageVersionInfo(&Data->VersionInfo, Data->FileName->Buffer);
     }
 
-    PhpResetServiceNonPollGate(); // HACK
+    PhpResetServiceNonPollGate(); // HACK (dmex)
 }
 
 VOID PhpServiceQueryStage2(
@@ -548,20 +554,14 @@ VOID PhpServiceQueryStage2(
             );
     }
 
-    PhpResetServiceNonPollGate(); // HACK
+    PhpResetServiceNonPollGate(); // HACK (dmex)
 }
 
 NTSTATUS PhpServiceQueryStage1Worker(
     _In_ PVOID Parameter
     )
 {
-    PPH_SERVICE_QUERY_S1_DATA data;
-    PPH_SERVICE_ITEM serviceItem = (PPH_SERVICE_ITEM)Parameter;
-
-    data = PhAllocate(sizeof(PH_SERVICE_QUERY_S1_DATA));
-    memset(data, 0, sizeof(PH_SERVICE_QUERY_S1_DATA));
-    data->Header.Stage = 1;
-    data->Header.ServiceItem = serviceItem;
+    PPH_SERVICE_QUERY_S1_DATA data = Parameter;
 
     PhpServiceQueryStage1(data);
 
@@ -577,8 +577,7 @@ NTSTATUS PhpServiceQueryStage2Worker(
     PPH_SERVICE_QUERY_S2_DATA data;
     PPH_SERVICE_ITEM serviceItem = (PPH_SERVICE_ITEM)Parameter;
 
-    data = PhAllocate(sizeof(PH_SERVICE_QUERY_S2_DATA));
-    memset(data, 0, sizeof(PH_SERVICE_QUERY_S2_DATA));
+    data = PhAllocateZero(sizeof(PH_SERVICE_QUERY_S2_DATA));
     data->Header.Stage = 2;
     data->Header.ServiceItem = serviceItem;
 
@@ -590,19 +589,20 @@ NTSTATUS PhpServiceQueryStage2Worker(
 }
 
 VOID PhpQueueServiceQueryStage1(
-    _In_ PPH_SERVICE_ITEM ServiceItem
+    _Inout_ PPH_SERVICE_QUERY_S1_DATA Data
     )
 {
+    PPH_SERVICE_ITEM serviceItem = Data->Header.ServiceItem;
     PH_WORK_QUEUE_ENVIRONMENT environment;
-
-    PhReferenceObject(ServiceItem);
 
     PhInitializeWorkQueueEnvironment(&environment);
     environment.BasePriority = THREAD_PRIORITY_BELOW_NORMAL;
     environment.IoPriority = IoPriorityLow;
     environment.PagePriority = MEMORY_PRIORITY_LOW;
 
-    PhQueueItemWorkQueueEx(PhGetGlobalWorkQueue(), PhpServiceQueryStage1Worker, ServiceItem, NULL, &environment);
+    PhReferenceObject(serviceItem);
+
+    PhQueueItemWorkQueueEx(PhGetGlobalWorkQueue(), PhpServiceQueryStage1Worker, Data, NULL, &environment);
 }
 
 VOID PhQueueServiceQueryStage2(
@@ -733,7 +733,7 @@ VOID PhServiceProviderUpdate(
 
     // This has caused a massive decrease in background CPU usage, and
     // is certainly much better than the quadratic-time string comparisons
-    // we were doing before (in the "Look for dead services" section).
+    // we were doing before (in the "Look for dead services" section). (wj32)
 
     nameEntriesCount = 0;
 
@@ -885,27 +885,35 @@ VOID PhServiceProviderUpdate(
                     {
                         // The process doesn't exist yet (to us). Set the pending
                         // flag and when the process is added this will be
-                        // fixed.
+                        // fixed. (wj32)
                         serviceItem->PendingProcess = TRUE;
                     }
                 }
 
                 // If this is the first run of the provider, queue the
                 // process query tasks. Otherwise, perform stage 1
-                // processing now and queue stage 2 processing.
+                // processing now and queue stage 2 processing. (wj32)
                 if (runCount > 0)
                 {
                     PH_SERVICE_QUERY_S1_DATA data;
 
                     memset(&data, 0, sizeof(PH_SERVICE_QUERY_S1_DATA));
                     data.Header.Stage = 1;
+                    data.Header.ServiceManagerHandle = scManagerHandle;
                     data.Header.ServiceItem = serviceItem;
                     PhpServiceQueryStage1(&data);
                     PhpFillServiceItemStage1(&data);
                 }
                 else
                 {
-                    PhpQueueServiceQueryStage1(serviceItem);
+                    PPH_SERVICE_QUERY_S1_DATA data;
+
+                    data = PhAllocateZero(sizeof(PH_SERVICE_QUERY_S1_DATA));
+                    data->Header.Stage = 1;
+                    data->Header.ServiceManagerHandle = scManagerHandle;
+                    data->Header.ServiceItem = serviceItem;
+
+                    PhpQueueServiceQueryStage1(data);
                 }
 
                 // Add the service item to the hashtable.
@@ -948,7 +956,7 @@ VOID PhServiceProviderUpdate(
                     if (serviceItem->ProcessId)
                         PhPrintUInt32(serviceItem->ProcessIdString, HandleToUlong(serviceItem->ProcessId));
                     else
-                        serviceItem->ProcessIdString[0] = 0;
+                        serviceItem->ProcessIdString[0] = UNICODE_NULL;
 
                     // Add/remove the service from its process.
 
@@ -992,7 +1000,7 @@ VOID PhServiceProviderUpdate(
                         PPH_PROCESS_ITEM processItem;
 
                         // The service stopped and started, and the only change we have detected
-                        // is in the process ID.
+                        // is in the process ID. (wj32)
 
                         if (processItem = PhReferenceProcessItem(serviceModifiedData.OldService.ProcessId))
                         {
@@ -1018,7 +1026,7 @@ VOID PhServiceProviderUpdate(
                         serviceItem->NeedsConfigUpdate = FALSE;
                     }
 
-                    if (serviceItem->JustProcessed) // HACK
+                    if (serviceItem->JustProcessed) // HACK (dmex)
                         serviceItem->JustProcessed = FALSE;
 
                     // Raise the service modified event.
@@ -1064,8 +1072,7 @@ VOID CALLBACK PhpServiceNonPollScNotifyCallback(
                     PPHP_SERVICE_NOTIFY_CONTEXT newNotifyContext;
 
                     // Service creation
-                    newNotifyContext = PhAllocate(sizeof(PHP_SERVICE_NOTIFY_CONTEXT));
-                    memset(newNotifyContext, 0, sizeof(PHP_SERVICE_NOTIFY_CONTEXT));
+                    newNotifyContext = PhAllocateZero(sizeof(PHP_SERVICE_NOTIFY_CONTEXT));
                     newNotifyContext->State = SnAdding;
                     newNotifyContext->ServiceName = PhCreateString(name + 1);
                     InsertTailList(&PhpNonPollServicePendingListHead, &newNotifyContext->ListEntry);
@@ -1125,8 +1132,11 @@ VOID CALLBACK PhpServicePropertyChangeNotifyCallback(
     PPH_SERVICE_ITEM serviceItem;
 
     // Note: Ignore deleted nofications since we handle this elsewhere and our
-    // notify context gets destroyed before services.exe invokes this callback. 
+    // notify context gets destroyed before services.exe invokes this callback. (dmex)
     if (ServiceNotifyFlags == SERVICE_NOTIFY_DELETED)
+        return;
+
+    if (!notifyContext)
         return;
 
     if (notifyContext->JustAddedNotifyRegistration)
@@ -1165,13 +1175,15 @@ NTSTATUS PhpServiceNonPollThreadStart(
         return STATUS_UNSUCCESSFUL;
     }
 
+    if (!(scManagerHandle = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE)))
+    {
+        PhpNonPollActive = FALSE;
+        PhpNonPollGate = 1;
+        return STATUS_UNSUCCESSFUL;
+    }
+
     while (TRUE)
     {
-        scManagerHandle = OpenSCManager(NULL, NULL, SC_MANAGER_ENUMERATE_SERVICE);
-
-        if (!scManagerHandle)
-            goto ErrorExit;
-
         if (!(services = PhEnumServices(scManagerHandle, 0, 0, &numberOfServices)))
             goto ErrorExit;
 
@@ -1184,8 +1196,7 @@ NTSTATUS PhpServiceNonPollThreadStart(
 
             if (serviceHandle)
             {
-                notifyContext = PhAllocate(sizeof(PHP_SERVICE_NOTIFY_CONTEXT));
-                memset(notifyContext, 0, sizeof(PHP_SERVICE_NOTIFY_CONTEXT));
+                notifyContext = PhAllocateZero(sizeof(PHP_SERVICE_NOTIFY_CONTEXT));
                 notifyContext->ServiceHandle = serviceHandle;
                 notifyContext->State = SnNotify;
                 notifyContext->ServiceName = PhCreateString(services[i].lpServiceName);
@@ -1195,8 +1206,7 @@ NTSTATUS PhpServiceNonPollThreadStart(
 
         PhFree(services);
 
-        notifyContext = PhAllocate(sizeof(PHP_SERVICE_NOTIFY_CONTEXT));
-        memset(notifyContext, 0, sizeof(PHP_SERVICE_NOTIFY_CONTEXT));
+        notifyContext = PhAllocateZero(sizeof(PHP_SERVICE_NOTIFY_CONTEXT));
         notifyContext->ServiceHandle = scManagerHandle;
         notifyContext->IsServiceManager = TRUE;
         notifyContext->State = SnNotify;
@@ -1221,11 +1231,20 @@ NTSTATUS PhpServiceNonPollThreadStart(
                     break;
                 case SnAdding:
                     {
-                        notifyContext->ServiceHandle =
-                            OpenService(scManagerHandle, notifyContext->ServiceName->Buffer, SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG);
+                        notifyContext->ServiceHandle = OpenService(
+                            scManagerHandle,
+                            notifyContext->ServiceName->Buffer,
+                            SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG
+                            );
 
                         if (!notifyContext->ServiceHandle)
-                            OpenService(scManagerHandle, notifyContext->ServiceName->Buffer, SERVICE_QUERY_STATUS);
+                        {
+                            notifyContext->ServiceHandle = OpenService(
+                                scManagerHandle,
+                                notifyContext->ServiceName->Buffer,
+                                SERVICE_QUERY_STATUS
+                                );
+                        }
 
                         if (!notifyContext->ServiceHandle)
                         {
@@ -1239,13 +1258,22 @@ NTSTATUS PhpServiceNonPollThreadStart(
                     __fallthrough;
                 case SnNotify:
                     {
+                        if (notifyContext->NotifyRegistration)
+                        {
+                            if (UnsubscribeServiceChangeNotifications_I && notifyContext->NotifyRegistration)
+                                UnsubscribeServiceChangeNotifications_I(notifyContext->NotifyRegistration);
+
+                            notifyContext->JustAddedNotifyRegistration = FALSE;
+                            notifyContext->NotifyRegistration = NULL;
+                        }
+
                         if (SubscribeServiceChangeNotifications_I && !notifyContext->IsServiceManager)
                         {
                             PSC_NOTIFICATION_REGISTRATION serviceNotifyRegistration;
 
                             if (SubscribeServiceChangeNotifications_I(
                                 notifyContext->ServiceHandle,
-                                SC_EVENT_PROPERTY_CHANGE, // TODO: SC_EVENT_STATUS_CHANGE
+                                SC_EVENT_PROPERTY_CHANGE, // TODO: SC_EVENT_STATUS_CHANGE (dmex)
                                 PhpServicePropertyChangeNotifyCallback,
                                 notifyContext,
                                 &serviceNotifyRegistration
@@ -1279,7 +1307,7 @@ NTSTATUS PhpServiceNonPollThreadStart(
                             InsertTailList(&PhpNonPollServiceListHead, &notifyContext->ListEntry);
                             break;
                         case ERROR_SERVICE_NOTIFY_CLIENT_LAGGING:
-                            // We are lagging behind. Re-open the handle to the SCM as soon as possible.
+                            // We are lagging behind. Re-open the handle to the SCM as soon as possible. (wj32)
                             lagging = TRUE;
                             break;
                         case ERROR_SERVICE_MARKED_FOR_DELETE:
@@ -1320,11 +1348,11 @@ NTSTATUS PhpServiceNonPollThreadStart(
             listEntry = listEntry->Flink;
             PhpDestroyServiceNotifyContext(notifyContext);
         }
-
-        CloseServiceHandle(scManagerHandle);
     }
 
     NtClose(PhpNonPollEventHandle);
+
+    CloseServiceHandle(scManagerHandle);
 
     return STATUS_SUCCESS;
 
@@ -1340,7 +1368,7 @@ VOID PhpInitializeServiceNonPoll(
     )
 {
     PhpNonPollActive = TRUE;
-    PhpNonPollGate = 1; // initially the gate should be open since we only just initialized everything
+    PhpNonPollGate = 1; // initially the gate should be open since we only just initialized everything (wj32)
 
     PhCreateThread2(PhpServiceNonPollThreadStart, NULL);
 }
@@ -1349,7 +1377,7 @@ VOID PhpWorkaroundWindows10ServiceTypeBug(
     _Inout_ LPENUM_SERVICE_STATUS_PROCESS ServieEntry
     )
 {
-    // https://github.com/processhacker2/processhacker/issues/120
+    // https://github.com/processhacker2/processhacker/issues/120 (dmex)
     if (ServieEntry->ServiceStatusProcess.dwServiceType == SERVICE_WIN32)
         ServieEntry->ServiceStatusProcess.dwServiceType = SERVICE_WIN32_SHARE_PROCESS;
     if (ServieEntry->ServiceStatusProcess.dwServiceType == (SERVICE_WIN32 | SERVICE_USER_SHARE_PROCESS | SERVICE_USERSERVICE_INSTANCE))
